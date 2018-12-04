@@ -6034,6 +6034,12 @@ static void *janus_streaming_relay_thread(void *data) {
 			mountpoint->enabled = FALSE;
 			break;
 		} else if(resfd == 0) {
+
+                       if(!source->rtsp && (janus_get_monotonic_time() - source->last_received_video > 15 * G_USEC_PER_SEC)) {
+			    JANUS_LOG(LOG_ERR, "[%s] Video receive timeout. Finishing relay thread...\n", name);
+                            break;
+                        }
+
 			/* No data, keep going */
 			continue;
 		}
