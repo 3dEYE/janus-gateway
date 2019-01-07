@@ -3197,12 +3197,10 @@ struct janus_plugin_result *janus_streaming_handle_message(janus_plugin_session 
 		}
 		janus_refcount_decrease(&mp->ref);
 
-		if(mp->ref.count != 0)
-		  JANUS_ERR(LOG_ERR, "Destroying mountpoint, bad counter: %d\n", mp->ref.count);
-
-		janus_streaming_mountpoint_destroy(mp);
-
-
+		if(mp->ref.count != 0) {
+		   JANUS_ERR(LOG_ERR, "Destroying mountpoint, bad counter: %d\n", mp->ref.count);
+		   janus_streaming_mountpoint_free(&mp->ref);
+                }
 
 		/* Also notify event handlers */
 		if(notify_events && gateway->events_is_enabled()) {
