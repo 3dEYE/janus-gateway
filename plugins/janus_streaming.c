@@ -2064,11 +2064,10 @@ struct janus_plugin_result *janus_streaming_handle_message(janus_plugin_session 
 		g_hash_table_iter_init(&iter, mountpoints);
 		while(g_hash_table_iter_next(&iter, NULL, &value)) {
 			janus_streaming_mountpoint *mp = value;
-			if(mp->is_private) {
-				/* Skip private stream */
+			/*if(mp->is_private) {
 				JANUS_LOG(LOG_VERB, "Skipping private mountpoint '%s'\n", mp->description);
 				continue;
-			}
+			}*/
 			janus_refcount_increase(&mp->ref);
 			json_t *ml = json_object();
 			json_object_set_new(ml, "id", json_integer(mp->id));
@@ -3197,6 +3196,11 @@ struct janus_plugin_result *janus_streaming_handle_message(janus_plugin_session 
 			janus_mutex_unlock(&config_mutex);
 		}
 		janus_refcount_decrease(&mp->ref);
+		janus_streaming_mountpoint_destroy(mp);
+
+		if(mp->ref.count != 0)
+		  JANUS_ERR(LOG_ERR, "Destroying mountpoint, bad counter: %d\n", mp->ref.count);
+
 		/* Also notify event handlers */
 		if(notify_events && gateway->events_is_enabled()) {
 			json_t *info = json_object();
