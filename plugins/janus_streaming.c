@@ -3195,12 +3195,9 @@ struct janus_plugin_result *janus_streaming_handle_message(janus_plugin_session 
 				save = FALSE;	/* This will notify the user the mountpoint is not permanent */
 			janus_mutex_unlock(&config_mutex);
 		}
-		janus_refcount_decrease(&mp->ref);
-
-		if(mp->ref.count != 0) {
-		   JANUS_LOG(LOG_ERR, "Destroying mountpoint, bad counter: %d\n", mp->ref.count);
-		   janus_streaming_mountpoint_free(&mp->ref);
-                }
+		//janus_refcount_decrease(&mp->ref);
+                JANUS_LOG(LOG_ERR, "Hard destroy mountpoint %d, counter: %d", mp->id, mp->ref.count);
+		janus_streaming_mountpoint_free(&mp->ref);
 
 		/* Also notify event handlers */
 		if(notify_events && gateway->events_is_enabled()) {
