@@ -981,7 +981,6 @@ typedef struct janus_streaming_rtp_source {
 	int audio_fd;
 	int video_fd[3];
 	int data_fd;
-	int pipefd[2];			/* Just needed to quickly interrupt the poll when it's time to wrap up */
 	int audio_rtcp_fd;
 	int video_rtcp_fd;
 	gboolean simulcast;
@@ -1162,17 +1161,7 @@ static void janus_streaming_mountpoint_destroy(janus_streaming_mountpoint *mount
 		return;
 	if(!g_atomic_int_compare_and_exchange(&mountpoint->destroyed, 0, 1))
 		return;
-	/* If this is an RTP source, interrupt the poll */
-	if(mountpoint->streaming_source == janus_streaming_source_rtp) {
-		janus_streaming_rtp_source *source = mountpoint->source;
-		if(source != NULL && source->pipefd[1] > 0) {
-			int code = 1;
-			ssize_t res = 0;
-			do {
-				res = write(source->pipefd[1], &code, sizeof(int));
-			} while(res == -1 && errno == EINTR);
-		}
-	}
+
 	/* Wait for the thread to finish */
 	if(mountpoint->thread != NULL && mountpoint->thread != g_thread_self())
 		g_thread_join(mountpoint->thread);
@@ -4465,12 +4454,7 @@ static void janus_streaming_rtp_source_free(janus_streaming_rtp_source *source) 
 	if(source->video_rtcp_fd > -1) {
 		close(source->video_rtcp_fd);
 	}
-	if(source->pipefd[0] > -1) {
-		close(source->pipefd[0]);
-	}
-	if(source->pipefd[1] > -1) {
-		close(source->pipefd[1]);
-	}
+
 	janus_mutex_lock(&source->keyframe.mutex);
 	if(source->keyframe.latest_keyframe != NULL)
 		g_list_free_full(source->keyframe.latest_keyframe, (GDestroyNotify)janus_streaming_rtp_relay_packet_free);
@@ -4805,9 +4789,6 @@ janus_streaming_mountpoint *janus_streaming_create_rtp_source(
 	live_rtp_source->video_fd[1] = video_fd[1];
 	live_rtp_source->video_fd[2] = video_fd[2];
 	live_rtp_source->data_fd = data_fd;
-	live_rtp_source->pipefd[0] = -1;
-	live_rtp_source->pipefd[1] = -1;
-	pipe(live_rtp_source->pipefd);
 	live_rtp_source->last_received_audio = janus_get_monotonic_time();
 	live_rtp_source->last_received_video = janus_get_monotonic_time();
 	live_rtp_source->last_received_data = janus_get_monotonic_time();
@@ -5488,9 +5469,6 @@ janus_streaming_mountpoint *janus_streaming_create_rtsp_source(
 	live_rtsp_source->video_rtcp_fd = -1;
 	live_rtsp_source->video_iface = iface ? *iface : nil;
 	live_rtsp_source->data_fd = -1;
-	live_rtsp_source->pipefd[0] = -1;
-	live_rtsp_source->pipefd[1] = -1;
-	pipe(live_rtsp_source->pipefd);
 	live_rtsp_source->data_iface = nil;
 	live_rtsp_source->reconnect_timer = 0;
 	janus_mutex_init(&live_rtsp_source->rtsp_mutex);
@@ -5831,7 +5809,6 @@ static void *janus_streaming_relay_thread(void *data) {
 	int audio_fd = source->audio_fd;
 	int video_fd[3] = {source->video_fd[0], source->video_fd[1], source->video_fd[2]};
 	int data_fd = source->data_fd;
-	int pipe_fd = source->pipefd[0];
 	int audio_rtcp_fd = source->audio_rtcp_fd;
 	int video_rtcp_fd = source->video_rtcp_fd;
 	char *name = g_strdup(mountpoint->name ? mountpoint->name : "??");
@@ -5841,7 +5818,7 @@ static void *janus_streaming_relay_thread(void *data) {
 	socklen_t addrlen;
 	struct sockaddr remote;
 	int resfd = 0, bytes = 0;
-	struct pollfd fds[8];
+	struct pollfd fds[7];
 	char buffer[1500];
 	memset(buffer, 0, 1500);
         int destroy_flag = 0;
@@ -6006,12 +5983,6 @@ static void *janus_streaming_relay_thread(void *data) {
 			fds[num].revents = 0;
 			num++;
 		}
-		if(pipe_fd != -1) {
-			fds[num].fd = pipe_fd;
-			fds[num].events = POLLIN;
-			fds[num].revents = 0;
-			num++;
-		}
 		if(audio_rtcp_fd != -1) {
 			fds[num].fd = audio_rtcp_fd;
 			fds[num].events = POLLIN;
@@ -6025,7 +5996,7 @@ static void *janus_streaming_relay_thread(void *data) {
 			num++;
 		}
 		/* Wait for some data */
-		resfd = poll(fds, num, 1000);
+		resfd = poll(fds, num, 500);
 
                if(!source->rtsp && (janus_get_monotonic_time() - source->last_received_video > 5 * 60 * G_USEC_PER_SEC)) {
                      JANUS_LOG(LOG_ERR, "[%s] Video receive timeout. Finishing relay thread...\n", name);
@@ -6055,13 +6026,7 @@ static void *janus_streaming_relay_thread(void *data) {
 				break;
 			} else if(fds[i].revents & POLLIN) {
 				/* Got an RTP or data packet */
-				if(pipe_fd != -1 && fds[i].fd == pipe_fd) {
-					/* We're done here */
-					int code = 0;
-					bytes = read(pipe_fd, &code, sizeof(int));
-					JANUS_LOG(LOG_VERB, "[%s] Interrupting mountpoint\n", mountpoint->name);
-					break;
-				} else if(audio_fd != -1 && fds[i].fd == audio_fd) {
+				 if(audio_fd != -1 && fds[i].fd == audio_fd) {
 					/* Got something audio (RTP) */
 					if(mountpoint->active == FALSE)
 						mountpoint->active = TRUE;
