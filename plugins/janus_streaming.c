@@ -4792,7 +4792,7 @@ janus_streaming_mountpoint *janus_streaming_create_rtp_source(
 	live_rtp_source->last_received_audio = janus_get_monotonic_time();
 	live_rtp_source->last_received_video = janus_get_monotonic_time();
 	live_rtp_source->last_received_data = janus_get_monotonic_time();
-	live_rtp_source->keyframe.enabled = bufferkf;
+	live_rtp_source->keyframe.enabled = true;//bufferkf;
 	live_rtp_source->keyframe.latest_keyframe = NULL;
 	live_rtp_source->keyframe.temp_keyframe = NULL;
 	live_rtp_source->keyframe.temp_ts = 0;
