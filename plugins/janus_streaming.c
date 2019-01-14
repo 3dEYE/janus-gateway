@@ -6390,8 +6390,14 @@ static void *janus_streaming_relay_thread(void *data) {
 		}
 	}
 
+        janus_mutex_lock(&mountpoints_mutex);
+
+         if(destroy_flag && g_hash_table_lookup(mountpoints, &mountpoint->id) != NULL)
+	   g_hash_table_remove(mountpoints, &mountpoint->id);
+
 	/* Notify users this mountpoint is done */
 	janus_mutex_lock(&mountpoint->mutex);
+
 	GList *viewer = g_list_first(mountpoint->viewers);
 	/* Prepare JSON event */
 	json_t *event = json_object();
@@ -6421,14 +6427,10 @@ static void *janus_streaming_relay_thread(void *data) {
 	JANUS_LOG(LOG_VERB, "[%s] Leaving streaming relay thread\n", name);
 	g_free(name);
         
-        if(destroy_flag) {
-         janus_mutex_lock(&mountpoints_mutex);
-         if(g_hash_table_lookup(mountpoints, &mountpoint->id) != NULL)
-	 	g_hash_table_remove(mountpoints, &mountpoint->id);
-	 janus_mutex_unlock(&mountpoints_mutex);
-        }
+        janus_refcount_decrease(&mountpoint->ref);
 
-	janus_refcount_decrease(&mountpoint->ref);
+	janus_mutex_unlock(&mountpoints_mutex);
+
 	return NULL;
 }
 
