@@ -1163,7 +1163,7 @@ static void janus_streaming_mountpoint_destroy(janus_streaming_mountpoint *mount
 		return;
 
 	/* Wait for the thread to finish */
-	if(mountpoint->thread != NULL)
+	if(mountpoint->thread != NULL && mountpoint->thread != g_thread_self())
 		g_thread_join(mountpoint->thread);
 	/* Get rid of the helper threads, if any */
 	if(mountpoint->helper_threads > 0) {
@@ -5821,6 +5821,9 @@ static void *janus_streaming_relay_thread(void *data) {
 	struct pollfd fds[7];
 	char buffer[1500];
 	memset(buffer, 0, 1500);
+        const gint64 timeout_interval = 5 * 60 * (gint64)G_USEC_PER_SEC;
+        gint64 last_time_packet_received = janus_get_monotonic_time();
+        int destroy_flag = 0;
 #ifdef HAVE_LIBCURL
 	/* In case this is an RTSP restreamer, we may have to send keep-alives from time to time */
 	gint64 now = janus_get_monotonic_time(), before = now, ka_timeout = 0;
@@ -6005,6 +6008,13 @@ static void *janus_streaming_relay_thread(void *data) {
 			mountpoint->enabled = FALSE;
 			break;
 		} else if(resfd == 0) {
+
+		       if((janus_get_monotonic_time() - last_time_packet_received) > timeout_interval) {
+		             JANUS_LOG(LOG_ERR, "[%s] Video receive timeout. Finishing relay thread...\n", name);
+		             destroy_flag = 1;
+		             break;
+		        }
+
 			/* No data, keep going */
 			continue;
 		}
@@ -6017,6 +6027,7 @@ static void *janus_streaming_relay_thread(void *data) {
 				mountpoint->enabled = FALSE;
 				break;
 			} else if(fds[i].revents & POLLIN) {
+				last_time_packet_received = janus_get_monotonic_time();
 				/* Got an RTP or data packet */
 				 if(audio_fd != -1 && fds[i].fd == audio_fd) {
 					/* Got something audio (RTP) */
@@ -6412,7 +6423,18 @@ static void *janus_streaming_relay_thread(void *data) {
 
 	JANUS_LOG(LOG_VERB, "[%s] Leaving streaming relay thread\n", name);
 	g_free(name);
+
 	janus_refcount_decrease(&mountpoint->ref);
+
+        if(destroy_flag) {
+           janus_mutex_lock(&mountpoints_mutex);
+
+           if(!g_atomic_int_get(&mountpoint->destroyed) && g_hash_table_lookup(mountpoints, &mountpoint->id) != NULL)
+	     g_hash_table_remove(mountpoints, &mountpoint->id);
+	   
+           janus_mutex_unlock(&mountpoints_mutex);
+        }
+
 	return NULL;
 }
 
