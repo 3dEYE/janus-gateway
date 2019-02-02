@@ -2106,6 +2106,8 @@ struct janus_plugin_result *janus_streaming_handle_message(janus_plugin_session 
 			json_t *secret = json_object_get(root, "secret");
 			if(secret && json_string_value(secret) && janus_strcmp_const_time(mp->secret, json_string_value(secret)))
 				admin = TRUE;
+		} else {
+			admin = TRUE;
 		}
 		json_t *ml = json_object();
 		json_object_set_new(ml, "id", json_integer(mp->id));
@@ -4524,7 +4526,7 @@ janus_streaming_mountpoint *janus_streaming_create_rtp_source(
 	if(name == NULL) {
 		JANUS_LOG(LOG_VERB, "Missing name, will generate a random one...\n");
 		memset(tempname, 0, 255);
-		g_snprintf(tempname, 255, "%"SCNu64, id);
+		g_snprintf(tempname, 255, "mp-%"SCNu64, id);
 	}
 	if(!doaudio && !dovideo && !dodata) {
 		JANUS_LOG(LOG_ERR, "Can't add 'rtp' stream, no audio, video or data have to be streamed...\n");
@@ -4914,7 +4916,7 @@ janus_streaming_mountpoint *janus_streaming_create_file_source(
 	char tempname[255];
 	if(!name) {
 		memset(tempname, 0, 255);
-		g_snprintf(tempname, 255, "%"SCNu64, file_source->id);
+		g_snprintf(tempname, 255, "mp-%"SCNu64, file_source->id);
 	}
 	file_source->name = g_strdup(name ? name : tempname);
 	char *description = NULL;
@@ -5369,10 +5371,10 @@ static int janus_streaming_rtsp_play(janus_streaming_rtp_source *source) {
 		}
 	}
 	if(source->remote_video_port > 0 && source->video_fd[0] >= 0) {
-		JANUS_LOG(LOG_WARN, "RTSP video latching: %s:%"SCNu16"\n", source->rtsp_vhost, source->remote_video_port);
+		JANUS_LOG(LOG_VERB, "RTSP video latching: %s:%"SCNu16"\n", source->rtsp_vhost, source->remote_video_port);
 		janus_streaming_rtsp_latch(source->video_fd[0], source->rtsp_vhost, source->remote_video_port, &remote);
 		if(source->remote_video_rtcp_port > 0 && source->video_rtcp_fd >= 0) {
-			JANUS_LOG(LOG_WARN, "  -- RTCP: %s:%"SCNu16"\n", source->rtsp_vhost, source->remote_video_rtcp_port);
+			JANUS_LOG(LOG_VERB, "  -- RTCP: %s:%"SCNu16"\n", source->rtsp_vhost, source->remote_video_rtcp_port);
 			janus_streaming_rtsp_latch(source->video_rtcp_fd, source->rtsp_vhost,
 				source->remote_video_rtcp_port, &source->video_rtcp_addr);
 		}
