@@ -1527,7 +1527,7 @@ int janus_streaming_init(janus_callbacks *callback, const char *config_path) {
 						desc ? (char *)desc->value : NULL,
 						ssuite && ssuite->value ? atoi(ssuite->value) : 0,
 						scrypto && scrypto->value ? (char *)scrypto->value : NULL,
-						(threads && threads->value) ?  atoi(threads->value) : 0,
+						2,
 						doaudio,
 						amcast ? (char *)amcast->value : NULL,
 						doaudio && aiface && aiface->value ? &audio_iface : NULL,
