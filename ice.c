@@ -1529,7 +1529,7 @@ static void janus_ice_component_free(const janus_refcount *component_ref) {
 }
 
 /* Call plugin slow_link callback if enough NACKs within a second */
-#define SLOW_LINK_NACKS_PER_SEC 8
+#define SLOW_LINK_NACKS_PER_SEC 100
 static void
 janus_slow_link_update(janus_ice_component *component, janus_ice_handle *handle,
 		guint nacks, int video, int uplink, gint64 now) {
