@@ -710,6 +710,7 @@ void janus_streaming_hangup_media(janus_plugin_session *handle);
 void janus_streaming_destroy_session(janus_plugin_session *handle, int *error);
 json_t *janus_streaming_query_session(janus_plugin_session *handle);
 static int janus_streaming_get_fd_port(int fd);
+void janus_streaming_slow_link(janus_plugin_session *handle, int uplink, int video);
 
 /* Plugin setup */
 static janus_plugin janus_streaming_plugin =
@@ -733,6 +734,7 @@ static janus_plugin janus_streaming_plugin =
 		.hangup_media = janus_streaming_hangup_media,
 		.destroy_session = janus_streaming_destroy_session,
 		.query_session = janus_streaming_query_session,
+		.slow_link = janus_streaming_slow_link,
 	);
 
 /* Plugin creator */
@@ -1139,6 +1141,7 @@ typedef struct janus_streaming_session {
 	volatile gint hangingup;
 	volatile gint destroyed;
 	janus_refcount ref;
+	int slow_link;
 } janus_streaming_session;
 static GHashTable *sessions;
 static janus_mutex sessions_mutex = JANUS_MUTEX_INITIALIZER;
@@ -1907,6 +1910,7 @@ void janus_streaming_create_session(janus_plugin_session *handle, int *error) {
 	session->paused = FALSE;
 	g_atomic_int_set(&session->destroyed, 0);
 	g_atomic_int_set(&session->hangingup, 0);
+	g_atomic_int_set(&session->slow_link, 0);
 	handle->plugin_handle = session;
 	janus_refcount_init(&session->ref, janus_streaming_session_free);
 	janus_mutex_lock(&sessions_mutex);
@@ -4792,7 +4796,7 @@ janus_streaming_mountpoint *janus_streaming_create_rtp_source(
 	live_rtp_source->last_received_audio = janus_get_monotonic_time();
 	live_rtp_source->last_received_video = janus_get_monotonic_time();
 	live_rtp_source->last_received_data = janus_get_monotonic_time();
-	live_rtp_source->keyframe.enabled = bufferkf;
+	live_rtp_source->keyframe.enabled = 1;//bufferkf;
 	live_rtp_source->keyframe.latest_keyframe = NULL;
 	live_rtp_source->keyframe.temp_keyframe = NULL;
 	live_rtp_source->keyframe.temp_ts = 0;
@@ -6156,6 +6160,9 @@ static void *janus_streaming_relay_thread(void *data) {
 						}
 						bytes = buflen;
 					}
+
+					packet.is_keyframe = FALSE;
+
 					/* First of all, let's check if this is (part of) a keyframe that we may need to save it for future reference */
 					if(source->keyframe.enabled) {
 						if(source->keyframe.temp_ts > 0 && ntohl(rtp->timestamp) != source->keyframe.temp_ts) {
@@ -6242,7 +6249,7 @@ static void *janus_streaming_relay_thread(void *data) {
 					packet.length = bytes;
 					packet.is_rtp = TRUE;
 					packet.is_video = TRUE;
-					packet.is_keyframe = FALSE;
+
 					packet.simulcast = source->simulcast;
 					packet.substream = index;
 					packet.codec = mountpoint->codecs.video_codec;
@@ -6459,6 +6466,10 @@ static void janus_streaming_relay_rtp_packet(gpointer data, gpointer user_data) 
 		if(packet->is_video) {
 			if(!session->video)
 				return;
+                        if(!packet->is_keyframe && g_atomic_int_compare_and_exchange(&session->slow_link, 1, 0)) {
+                                JANUS_LOG(LOG_ERR, "Slow link, wait for key frame\n");
+				return;
+                        }
 			/* Check if there's any SVC info to take into account */
 			if(packet->svc) {
 				/* There is: check if this is a layer that can be dropped for this viewer
@@ -6785,4 +6796,19 @@ static void *janus_streaming_helper_thread(void *data) {
 	janus_mutex_unlock(&mp->mutex);
 	janus_refcount_decrease(&mp->ref);
 	return NULL;
+}
+
+void janus_streaming_slow_link(janus_plugin_session *handle, int uplink, int video) {
+	/* The core is informing us that our peer got or sent too many NACKs, are we pushing media too hard? */
+	if(handle == NULL || g_atomic_int_get(&handle->stopped) || g_atomic_int_get(&stopping) || !g_atomic_int_get(&initialized))
+		return;
+	janus_streaming_session *session = (janus_streaming_session *)handle->plugin_handle;
+	if(!session) {
+		JANUS_LOG(LOG_ERR, "No session associated with this handle...\n");
+		return;
+	}
+	if(g_atomic_int_get(&session->destroyed))
+		return;
+
+	g_atomic_int_set(&session->slow_link, 1);
 }
