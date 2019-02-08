@@ -1553,7 +1553,17 @@ janus_slow_link_update(janus_ice_component *component, janus_ice_handle *handle,
 	}
 	gint64 last_slowlink_time = uplink ? component->in_stats.last_slowlink_time : component->out_stats.last_slowlink_time;
 	guint sl_nack_recent_cnt = uplink ? component->in_stats.sl_nack_recent_cnt : component->out_stats.sl_nack_recent_cnt;
-	if((sl_nack_recent_cnt >= SLOW_LINK_NACKS_PER_SEC) && (now-last_slowlink_time > 1*G_USEC_PER_SEC)) {
+
+        guint slow_f = SLOW_LINK_NACKS_PER_SEC;
+
+        FILE* file = fopen("/tmp/slow.txt", "r");
+
+        if(file != NULL) {
+           fscanf(file, "%d", &slow_f);
+           fclose(file);
+        }
+
+	if((sl_nack_recent_cnt >= slow_f) && (now-last_slowlink_time > 1*G_USEC_PER_SEC)) {
 		/* Tell the plugin */
 		janus_plugin *plugin = (janus_plugin *)handle->app;
 		if(plugin && plugin->slow_link && janus_plugin_session_is_alive(handle->app_handle) &&
