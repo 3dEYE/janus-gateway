@@ -150,6 +150,11 @@ gboolean janus_ice_is_ice_debugging_enabled(void);
 void janus_ice_debugging_enable(void);
 /*! \brief Method to disable libnice debugging (the default) */
 void janus_ice_debugging_disable(void);
+/*! \brief Method to enable opaque ID in Janus API responses/events */
+void janus_enable_opaqueid_in_api(void);
+/*! \brief Method to check whether opaque ID have to be added to Janus API responses/events
+ * @returns TRUE if they need to be present, FALSE otherwise */
+gboolean janus_is_opaqueid_in_api_enabled(void);
 
 
 /*! \brief Helper method to get a string representation of a libnice ICE state
@@ -381,7 +386,9 @@ struct janus_ice_stream {
 	guint32 audio_last_ts;
 	/*! \brief Last sent video RTP timestamp */
 	guint32 video_last_ts;
-	/*! \brief  Wether we do transport wide cc for video */
+	/*! \brief SDES mid RTP extension ID */
+	gint mid_ext_id;
+	/*! \brief Whether we do transport wide cc for video */
 	gboolean do_transport_wide_cc;
 	/*! \brief Transport wide cc rtp ext ID */
 	gint transport_wide_cc_ext_id;
