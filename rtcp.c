@@ -656,11 +656,13 @@ int janus_rtcp_process_incoming_rtp(janus_rtcp_context *ctx, char *packet, int l
 
 			int64_t arrival = (now * ctx->tb) / 1000000;
 			int64_t transit = arrival - ntohl(rtp->timestamp);
-			int64_t d = transit - ctx->transit;
-			if (d < 0) d = -d;
-			ctx->transit = transit;
-			ctx->jitter += (1./16.) * ((double)d  - ctx->jitter);
+			if (ctx->transit != 0) {
+				int64_t d = transit - ctx->transit;
+				if (d < 0) d = -d;
+				ctx->jitter += (1./16.) * ((double)d  - ctx->jitter);
+			}
 
+			ctx->transit = transit;
 			ctx->rtp_last_inorder_ts = ntohl(rtp->timestamp);
 			ctx->rtp_last_inorder_time = now;
 		} else {
@@ -676,13 +678,13 @@ int janus_rtcp_process_incoming_rtp(janus_rtcp_context *ctx, char *packet, int l
 					/* TODO We have to accomplish this in a smarter way */
 					int32_t rtp_diff = ntohl(rtp->timestamp) - ctx->rtp_last_inorder_ts;
 					int32_t ms_diff = (abs(rtp_diff) * 1000) / ctx->tb;
-					if (ms_diff >= 100)
+					if (ms_diff > 120)
 						ctx->retransmitted++;
 					else
 						ctx->received++;
 				} else {
 					/* The stream does not have a retransmission mechanism (e.g. audio wo/ NACKs) */
-					/* Do nothing */
+					ctx->received++;
 				}
 			}
 		}
@@ -1164,29 +1166,27 @@ int janus_rtcp_cap_remb(char *packet, int len, uint32_t bitrate) {
 					brMantissa += (_ptrRTCPData[2] << 8);
 					brMantissa += (_ptrRTCPData[3]);
 					uint32_t origbitrate = (uint64_t)brMantissa << brExp;
-					if(origbitrate > bitrate) {
-						JANUS_LOG(LOG_HUGE, "Got REMB bitrate %"SCNu32", need to cap it to %"SCNu32"\n", origbitrate, bitrate);
-						JANUS_LOG(LOG_HUGE, "  >> %u * 2^%u = %"SCNu32"\n", brMantissa, brExp, origbitrate);
-						/* bitrate --> brexp/brmantissa */
-						uint8_t b = 0;
-						uint8_t newbrexp = 0;
-						uint32_t newbrmantissa = 0;
-						for(b=0; b<32; b++) {
-							if(bitrate <= ((uint32_t) 0x3FFFF << b)) {
-								newbrexp = b;
-								break;
-							}
+					JANUS_LOG(LOG_HUGE, "Got REMB bitrate %"SCNu32", need to cap it to %"SCNu32"\n", origbitrate, bitrate);
+					JANUS_LOG(LOG_HUGE, "  >> %u * 2^%u = %"SCNu32"\n", brMantissa, brExp, origbitrate);
+					/* bitrate --> brexp/brmantissa */
+					uint8_t b = 0;
+					uint8_t newbrexp = 0;
+					uint32_t newbrmantissa = 0;
+					for(b=0; b<32; b++) {
+						if(bitrate <= ((uint32_t) 0x3FFFF << b)) {
+							newbrexp = b;
+							break;
 						}
-						if(b > 31)
-							b = 31;
-						newbrmantissa = bitrate >> b;
-						JANUS_LOG(LOG_HUGE, "new brexp:      %"SCNu8"\n", newbrexp);
-						JANUS_LOG(LOG_HUGE, "new brmantissa: %"SCNu32"\n", newbrmantissa);
-						/* FIXME From rtcp_sender.cc */
-						_ptrRTCPData[1] = (uint8_t)((newbrexp << 2) + ((newbrmantissa >> 16) & 0x03));
-						_ptrRTCPData[2] = (uint8_t)(newbrmantissa >> 8);
-						_ptrRTCPData[3] = (uint8_t)(newbrmantissa);
 					}
+					if(b > 31)
+						b = 31;
+					newbrmantissa = bitrate >> b;
+					JANUS_LOG(LOG_HUGE, "new brexp:      %"SCNu8"\n", newbrexp);
+					JANUS_LOG(LOG_HUGE, "new brmantissa: %"SCNu32"\n", newbrmantissa);
+					/* FIXME From rtcp_sender.cc */
+					_ptrRTCPData[1] = (uint8_t)((newbrexp << 2) + ((newbrmantissa >> 16) & 0x03));
+					_ptrRTCPData[2] = (uint8_t)(newbrmantissa >> 8);
+					_ptrRTCPData[3] = (uint8_t)(newbrmantissa);
 				}
 			}
 		}

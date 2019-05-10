@@ -3163,6 +3163,7 @@ struct janus_plugin_result *janus_streaming_handle_message(janus_plugin_session 
 							ht->num_viewers--;
 							ht->viewers = g_list_remove_all(ht->viewers, session);
 							janus_mutex_unlock(&ht->mutex);
+							JANUS_LOG(LOG_VERB, "Removing viewer from helper thread #%d (destroy)\n", ht->id);
 							break;
 						}
 						janus_mutex_unlock(&ht->mutex);
@@ -3277,7 +3278,9 @@ struct janus_plugin_result *janus_streaming_handle_message(janus_plugin_session 
 			}
 			if(audio) {
 				const char *codec = NULL;
-				if(strstr(mp->codecs.audio_rtpmap, "opus") || strstr(mp->codecs.audio_rtpmap, "OPUS"))
+				if (!mp->codecs.audio_rtpmap)
+					JANUS_LOG(LOG_ERR, "[%s] Audio RTP map is uninitialized\n", mp->name);
+				else if(strstr(mp->codecs.audio_rtpmap, "opus") || strstr(mp->codecs.audio_rtpmap, "OPUS"))
 					codec = "opus";
 				else if(strstr(mp->codecs.audio_rtpmap, "pcma") || strstr(mp->codecs.audio_rtpmap, "PCMA"))
 					codec = "pcma";
@@ -3299,7 +3302,9 @@ struct janus_plugin_result *janus_streaming_handle_message(janus_plugin_session 
 			}
 			if(video) {
 				const char *codec = NULL;
-				if(strstr(mp->codecs.video_rtpmap, "vp8") || strstr(mp->codecs.video_rtpmap, "VP8"))
+				if (!mp->codecs.video_rtpmap)
+					JANUS_LOG(LOG_ERR, "[%s] Video RTP map is uninitialized\n", mp->name);
+				else if(strstr(mp->codecs.video_rtpmap, "vp8") || strstr(mp->codecs.video_rtpmap, "VP8"))
 					codec = "vp8";
 				else if(strstr(mp->codecs.video_rtpmap, "vp9") || strstr(mp->codecs.video_rtpmap, "VP9"))
 					codec = "vp9";
@@ -3681,6 +3686,7 @@ static void janus_streaming_hangup_media_internal(janus_plugin_session *handle) 
 						ht->num_viewers--;
 						ht->viewers = g_list_remove_all(ht->viewers, session);
 						janus_mutex_unlock(&ht->mutex);
+						JANUS_LOG(LOG_VERB, "Removing viewer from helper thread #%d\n", ht->id);
 						break;
 					}
 					janus_mutex_unlock(&ht->mutex);
@@ -4222,8 +4228,8 @@ done:
 			janus_mutex_lock(&oldmp->mutex);
 			oldmp->viewers = g_list_remove_all(oldmp->viewers, session);
 			/* Remove the viewer from the helper threads too, if any */
-			if(mp->helper_threads > 0) {
-				GList *l = mp->threads;
+			if(oldmp->helper_threads > 0) {
+				GList *l = oldmp->threads;
 				while(l) {
 					janus_streaming_helper *ht = (janus_streaming_helper *)l->data;
 					janus_mutex_lock(&ht->mutex);
@@ -4231,6 +4237,7 @@ done:
 						ht->num_viewers--;
 						ht->viewers = g_list_remove_all(ht->viewers, session);
 						janus_mutex_unlock(&ht->mutex);
+						JANUS_LOG(LOG_VERB, "Removing viewer from helper thread #%d (switching)\n", ht->id);
 						break;
 					}
 					janus_mutex_unlock(&ht->mutex);
@@ -4255,7 +4262,7 @@ done:
 					}
 					l = l->next;
 				}
-				JANUS_LOG(LOG_INFO, "Adding viewer to helper thread %d\n", helper->id);
+				JANUS_LOG(LOG_VERB, "Adding viewer to helper thread #%d\n", helper->id);
 				janus_mutex_lock(&helper->mutex);
 				helper->viewers = g_list_append(helper->viewers, session);
 				helper->num_viewers++;
@@ -6342,11 +6349,15 @@ static void *janus_streaming_relay_thread(void *data) {
 				} else if(audio_rtcp_fd != -1 && fds[i].fd == audio_rtcp_fd) {
 					addrlen = sizeof(remote);
 					bytes = recvfrom(audio_rtcp_fd, buffer, 1500, 0, &remote, &addrlen);
+					if(!janus_is_rtp(buffer, bytes) && !janus_is_rtcp(buffer, bytes)) {
+						/* For latching we need an RTP or RTCP packet */
+						continue;
+					}
+					memcpy(&source->audio_rtcp_addr, &remote, addrlen);
 					if(!janus_is_rtcp(buffer, bytes)) {
 						/* Failed to read or not an RTCP packet? */
 						continue;
 					}
-					memcpy(&source->audio_rtcp_addr, &remote, addrlen);
 					JANUS_LOG(LOG_HUGE, "[%s] Got audio RTCP feedback: SSRC %"SCNu32"\n",
 						name, janus_rtcp_get_sender_ssrc(buffer, bytes));
 					/* Relay on all sessions */
@@ -6362,11 +6373,15 @@ static void *janus_streaming_relay_thread(void *data) {
 				} else if(video_rtcp_fd != -1 && fds[i].fd == video_rtcp_fd) {
 					addrlen = sizeof(remote);
 					bytes = recvfrom(video_rtcp_fd, buffer, 1500, 0, &remote, &addrlen);
+					if(!janus_is_rtp(buffer, bytes) && !janus_is_rtcp(buffer, bytes)) {
+						/* For latching we need an RTP or RTCP packet */
+						continue;
+					}
+					memcpy(&source->video_rtcp_addr, &remote, addrlen);
 					if(!janus_is_rtcp(buffer, bytes)) {
 						/* Failed to read or not an RTCP packet? */
 						continue;
 					}
-					memcpy(&source->video_rtcp_addr, &remote, addrlen);
 					JANUS_LOG(LOG_HUGE, "[%s] Got video RTCP feedback: SSRC %"SCNu32"\n",
 						name, janus_rtcp_get_sender_ssrc(buffer, bytes));
 					/* Relay on all sessions */
@@ -6680,7 +6695,7 @@ static void janus_streaming_relay_rtp_packet(gpointer data, gpointer user_data) 
 			return;
 		char *text = (char *)packet->data;
 		if(gateway != NULL && text != NULL)
-			gateway->relay_data(session->handle, text, strlen(text));
+			gateway->relay_data(session->handle, NULL, text, strlen(text));
 	}
 
 	return;
