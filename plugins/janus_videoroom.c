@@ -1438,6 +1438,7 @@ typedef struct janus_videoroom_publisher {
 	uint32_t ssrc[3];		/* Only needed in case VP8 (or H.264) simulcasting is involved */
 	char *rid[3];			/* Only needed if simulcasting is rid-based */
 	int rid_extmap_id;		/* rid extmap ID */
+	int framemarking_ext_id;			/* Frame marking extmap ID */
 	guint8 audio_level_extmap_id;		/* Audio level extmap ID */
 	guint8 video_orient_extmap_id;		/* Video orientation extmap ID */
 	guint8 playout_delay_extmap_id;		/* Playout delay extmap ID */
@@ -5999,6 +6000,7 @@ static void *janus_videoroom_handler(void *data) {
 					JANUS_SDP_OA_ACCEPT_EXTMAP, JANUS_RTP_EXTMAP_MID,
 					JANUS_SDP_OA_ACCEPT_EXTMAP, JANUS_RTP_EXTMAP_RID,
 					JANUS_SDP_OA_ACCEPT_EXTMAP, JANUS_RTP_EXTMAP_REPAIRED_RID,
+					JANUS_SDP_OA_ACCEPT_EXTMAP, JANUS_RTP_EXTMAP_FRAME_MARKING,
 					JANUS_SDP_OA_ACCEPT_EXTMAP, videoroom->audiolevel_ext ? JANUS_RTP_EXTMAP_AUDIO_LEVEL : NULL,
 					JANUS_SDP_OA_ACCEPT_EXTMAP, videoroom->videoorient_ext ? JANUS_RTP_EXTMAP_VIDEO_ORIENTATION : NULL,
 					JANUS_SDP_OA_ACCEPT_EXTMAP, videoroom->playoutdelay_ext ? JANUS_RTP_EXTMAP_PLAYOUT_DELAY : NULL,
@@ -6102,7 +6104,9 @@ static void *janus_videoroom_handler(void *data) {
 					if(msg_simulcast && (participant->vcodec == JANUS_VIDEOCODEC_VP8 ||
 							participant->vcodec == JANUS_VIDEOCODEC_H264)) {
 						JANUS_LOG(LOG_VERB, "Publisher is going to do simulcasting\n");
-						janus_rtp_simulcasting_prepare(msg_simulcast, &participant->rid_extmap_id,
+						janus_rtp_simulcasting_prepare(msg_simulcast,
+							&participant->rid_extmap_id,
+							&participant->framemarking_ext_id,
 							participant->ssrc, participant->rid);
 					} else {
 						/* No simulcasting involved */
@@ -6438,7 +6442,7 @@ static void janus_videoroom_rtp_forwarder_rtcp_receive(janus_videoroom_rtp_forwa
 	struct sockaddr_storage remote_addr;
 	socklen_t addrlen = sizeof(remote_addr);
 	int len = recvfrom(forward->rtcp_fd, buffer, sizeof(buffer), 0, (struct sockaddr *)&remote_addr, &addrlen);
-	if(janus_is_rtcp(buffer, len)) {
+	if(len > 0 && janus_is_rtcp(buffer, len)) {
 		JANUS_LOG(LOG_HUGE, "Got %s RTCP packet: %d bytes\n", forward->is_video ? "video" : "audio", len);
 		/* We only handle incoming video PLIs or FIR at the moment */
 		if(!janus_rtcp_has_fir(buffer, len) && !janus_rtcp_has_pli(buffer, len))
