@@ -634,6 +634,19 @@ room-<unique room ID>: {
 }
 \endverbatim
  *
+ * When configuring the room to request the ssrc-audio-level RTP extension,
+ * ad-hoc events might be sent to all publishers if \c audiolevel_event is
+ * set to true. These events will have the following format:
+ *
+\verbatim
+{
+	"videoroom" : <"talking"|"stopped-talking", whether the publisher started or stopped talking>,
+	"room" : <unique numeric ID of the room the publisher is in>,
+	"id" : <unique numeric ID of the publisher>,
+	"audio-level-dBov-avg" : <average value of audio level, 127=muted, 0='too loud'>
+}
+\endverbatim
+ *
  * An interesting feature VideoRoom publisher can take advantage of is
  * RTP forwarding. In fact, while the main purpose of this plugin is
  * getting media from WebRTC sources (publishers) and relaying it to
@@ -4159,9 +4172,11 @@ void janus_videoroom_setup_media(janus_plugin_session *handle) {
 			json_object_set_new(pub, "videoroom", json_string("event"));
 			json_object_set_new(pub, "room", json_integer(participant->room_id));
 			json_object_set_new(pub, "publishers", list);
-			janus_mutex_lock(&participant->room->mutex);
-			janus_videoroom_notify_participants(participant, pub);
-			janus_mutex_unlock(&participant->room->mutex);
+			if (participant->room) {
+				janus_mutex_lock(&participant->room->mutex);
+				janus_videoroom_notify_participants(participant, pub);
+				janus_mutex_unlock(&participant->room->mutex);
+			}
 			json_decref(pub);
 			/* Also notify event handlers */
 			if(notify_events && gateway->events_is_enabled()) {
@@ -4217,7 +4232,8 @@ void janus_videoroom_incoming_rtp(janus_plugin_session *handle, int video, char 
 			participant->audio_dBov_level = level;
 			if(participant->audio_active_packets > 0 && participant->audio_active_packets == videoroom->audio_active_packets) {
 				gboolean notify_talk_event = FALSE;
-				if((float)participant->audio_dBov_sum/(float)participant->audio_active_packets < videoroom->audio_level_average) {
+				float audio_dBov_avg = (float)participant->audio_dBov_sum/(float)participant->audio_active_packets;
+				if(audio_dBov_avg < videoroom->audio_level_average) {
 					/* Participant talking, should we notify all participants? */
 					if(!participant->talking)
 						notify_talk_event = TRUE;
@@ -4237,6 +4253,7 @@ void janus_videoroom_incoming_rtp(janus_plugin_session *handle, int video, char 
 					json_object_set_new(event, "videoroom", json_string(participant->talking ? "talking" : "stopped-talking"));
 					json_object_set_new(event, "room", json_integer(videoroom->room_id));
 					json_object_set_new(event, "id", json_integer(participant->user_id));
+					json_object_set_new(event, "audio-level-dBov-avg", json_real(audio_dBov_avg));
 					janus_videoroom_notify_participants(participant, event);
 					json_decref(event);
 					janus_mutex_unlock(&videoroom->mutex);
@@ -4246,6 +4263,7 @@ void janus_videoroom_incoming_rtp(janus_plugin_session *handle, int video, char 
 						json_object_set_new(info, "videoroom", json_string(participant->talking ? "talking" : "stopped-talking"));
 						json_object_set_new(info, "room", json_integer(videoroom->room_id));
 						json_object_set_new(info, "id", json_integer(participant->user_id));
+						json_object_set_new(event, "audio-level-dBov-avg", json_real(audio_dBov_avg));
 						gateway->notify_event(&janus_videoroom_plugin, session->handle, info);
 					}
 				}
@@ -5034,8 +5052,8 @@ static void *janus_videoroom_handler(void *data) {
 						/* Private ID already taken, try another one */
 						publisher->pvt_id = 0;
 					}
-					g_hash_table_insert(publisher->room->private_ids, GUINT_TO_POINTER(publisher->pvt_id), publisher);
 				}
+				g_hash_table_insert(publisher->room->private_ids, GUINT_TO_POINTER(publisher->pvt_id), publisher);
 				g_atomic_int_set(&publisher->destroyed, 0);
 				janus_refcount_init(&publisher->ref, janus_videoroom_publisher_free);
 				/* In case we also wanted to configure */
