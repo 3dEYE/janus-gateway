@@ -932,6 +932,7 @@ static void *janus_streaming_handler(void *data);
 static uint16_t rtp_range_min = DEFAULT_RTP_RANGE_MIN;
 static uint16_t rtp_range_max = DEFAULT_RTP_RANGE_MAX;
 static uint16_t rtp_range_slider = DEFAULT_RTP_RANGE_MIN;
+static janus_mutex fd_mutex = JANUS_MUTEX_INITIALIZER;
 
 static void *janus_streaming_ondemand_thread(void *data);
 static void *janus_streaming_filesource_thread(void *data);
@@ -1099,7 +1100,7 @@ typedef struct janus_streaming_mountpoint {
 	janus_mutex mutex;
 	janus_refcount ref;
 } janus_streaming_mountpoint;
-GHashTable *mountpoints;
+GHashTable *mountpoints = NULL, *mountpoints_temp = NULL;
 janus_mutex mountpoints_mutex;
 static char *admin_key = NULL;
 
@@ -1360,6 +1361,7 @@ int janus_streaming_init(janus_callbacks *callback, const char *config_path) {
 		janus_config_print(config);
 
 	mountpoints = g_hash_table_new_full(g_int64_hash, g_int64_equal, (GDestroyNotify)g_free, (GDestroyNotify)janus_streaming_mountpoint_destroy);
+	mountpoints_temp = g_hash_table_new(g_int64_hash, g_int64_equal);
 
 	/* Threads will expect this to be set */
 	g_atomic_int_set(&initialized, 1);
@@ -1903,6 +1905,8 @@ void janus_streaming_destroy(void) {
 	janus_mutex_lock(&mountpoints_mutex);
 	g_hash_table_destroy(mountpoints);
 	mountpoints = NULL;
+	g_hash_table_destroy(mountpoints_temp);
+	mountpoints_temp = NULL;
 	janus_mutex_unlock(&mountpoints_mutex);
 	janus_mutex_lock(&sessions_mutex);
 	g_hash_table_destroy(sessions);
@@ -2446,23 +2450,35 @@ static json_t *janus_streaming_process_synchronous_request(janus_streaming_sessi
 				goto prepare_response;
 #endif
 			}
+			/* Check if an ID has been provided, or if we need to generate one ourselves */
+			janus_mutex_lock(&mountpoints_mutex);
+			guint64 mpid = 0;
 			if(id == NULL) {
 				JANUS_LOG(LOG_VERB, "Missing id, will generate a random one...\n");
+				while(mpid == 0) {
+					mpid = janus_random_uint64();
+					if(g_hash_table_lookup(mountpoints, &mpid) != NULL ||
+							g_hash_table_lookup(mountpoints_temp, &mpid) != NULL) {
+						/* ID already in use, try another one */
+						mpid = 0;
+					}
+				}
 			} else {
-				janus_mutex_lock(&mountpoints_mutex);
-				guint64 mpid = json_integer_value(id);
+				mpid = json_integer_value(id);
 				mp = g_hash_table_lookup(mountpoints, &mpid);
-				janus_mutex_unlock(&mountpoints_mutex);
-				if(mp != NULL) {
+				if(mp != NULL || g_hash_table_lookup(mountpoints_temp, &mpid)) {
+					janus_mutex_unlock(&mountpoints_mutex);
 					JANUS_LOG(LOG_ERR, "A stream with the provided ID already exists\n");
 					error_code = JANUS_STREAMING_ERROR_CANT_CREATE;
 					g_snprintf(error_cause, 512, "A stream with the provided ID already exists");
 					goto prepare_response;
 				}
 			}
+			g_hash_table_insert(mountpoints_temp, &mpid, GUINT_TO_POINTER(TRUE));
+			janus_mutex_unlock(&mountpoints_mutex);
 			JANUS_LOG(LOG_VERB, "Audio %s, Video %s\n", doaudio ? "enabled" : "NOT enabled", dovideo ? "enabled" : "NOT enabled");
 			mp = janus_streaming_create_rtp_source(
-					id ? json_integer_value(id) : 0,
+					mpid,
 					name ? (char *)json_string_value(name) : NULL,
 					desc ? (char *)json_string_value(desc) : NULL,
 					ssuite ? json_integer_value(ssuite) : 0,
@@ -2473,6 +2489,9 @@ static json_t *janus_streaming_process_synchronous_request(janus_streaming_sessi
 					simulcast, vport2, vport3, dosvc, dovskew,
 					rtpcollision ? json_integer_value(rtpcollision) : 0,
 					dodata, &data_iface, dport, buffermsg);
+			janus_mutex_lock(&mountpoints_mutex);
+			g_hash_table_remove(mountpoints_temp, &mpid);
+			janus_mutex_unlock(&mountpoints_mutex);
 			if(mp == NULL) {
 				JANUS_LOG(LOG_ERR, "Error creating 'rtp' stream...\n");
 				error_code = JANUS_STREAMING_ERROR_CANT_CREATE;
@@ -2518,26 +2537,41 @@ static json_t *janus_streaming_process_synchronous_request(janus_streaming_sessi
 				goto prepare_response;
 			}
 			fclose(audiofile);
+			/* Check if an ID has been provided, or if we need to generate one ourselves */
+			janus_mutex_lock(&mountpoints_mutex);
+			guint64 mpid = 0;
 			if(id == NULL) {
 				JANUS_LOG(LOG_VERB, "Missing id, will generate a random one...\n");
+				while(mpid == 0) {
+					mpid = janus_random_uint64();
+					if(g_hash_table_lookup(mountpoints, &mpid) != NULL ||
+							g_hash_table_lookup(mountpoints_temp, &mpid) != NULL) {
+						/* ID already in use, try another one */
+						mpid = 0;
+					}
+				}
 			} else {
-				janus_mutex_lock(&mountpoints_mutex);
-				guint64 mpid = json_integer_value(id);
+				mpid = json_integer_value(id);
 				mp = g_hash_table_lookup(mountpoints, &mpid);
-				janus_mutex_unlock(&mountpoints_mutex);
-				if(mp != NULL) {
+				if(mp != NULL || g_hash_table_lookup(mountpoints_temp, &mpid)) {
+					janus_mutex_unlock(&mountpoints_mutex);
 					JANUS_LOG(LOG_ERR, "A stream with the provided ID already exists\n");
 					error_code = JANUS_STREAMING_ERROR_CANT_CREATE;
 					g_snprintf(error_cause, 512, "A stream with the provided ID already exists");
 					goto prepare_response;
 				}
 			}
+			g_hash_table_insert(mountpoints_temp, &mpid, GUINT_TO_POINTER(TRUE));
+			janus_mutex_unlock(&mountpoints_mutex);
 			mp = janus_streaming_create_file_source(
-					id ? json_integer_value(id) : 0,
+					mpid,
 					name ? (char *)json_string_value(name) : NULL,
 					desc ? (char *)json_string_value(desc) : NULL,
 					filename,
 					TRUE, doaudio, dovideo);
+			janus_mutex_lock(&mountpoints_mutex);
+			g_hash_table_remove(mountpoints_temp, &mpid);
+			janus_mutex_unlock(&mountpoints_mutex);
 			if(mp == NULL) {
 				JANUS_LOG(LOG_ERR, "Error creating 'live' stream...\n");
 				error_code = JANUS_STREAMING_ERROR_CANT_CREATE;
@@ -2583,26 +2617,41 @@ static json_t *janus_streaming_process_synchronous_request(janus_streaming_sessi
 				goto prepare_response;
 			}
 			fclose(audiofile);
+			/* Check if an ID has been provided, or if we need to generate one ourselves */
+			janus_mutex_lock(&mountpoints_mutex);
+			guint64 mpid = 0;
 			if(id == NULL) {
 				JANUS_LOG(LOG_VERB, "Missing id, will generate a random one...\n");
+				while(mpid == 0) {
+					mpid = janus_random_uint64();
+					if(g_hash_table_lookup(mountpoints, &mpid) != NULL ||
+							g_hash_table_lookup(mountpoints_temp, &mpid) != NULL) {
+						/* ID already in use, try another one */
+						mpid = 0;
+					}
+				}
 			} else {
-				janus_mutex_lock(&mountpoints_mutex);
-				guint64 mpid = json_integer_value(id);
+				mpid = json_integer_value(id);
 				mp = g_hash_table_lookup(mountpoints, &mpid);
-				janus_mutex_unlock(&mountpoints_mutex);
-				if(mp != NULL) {
+				if(mp != NULL || g_hash_table_lookup(mountpoints_temp, &mpid)) {
+					janus_mutex_unlock(&mountpoints_mutex);
 					JANUS_LOG(LOG_ERR, "A stream with the provided ID already exists\n");
 					error_code = JANUS_STREAMING_ERROR_CANT_CREATE;
 					g_snprintf(error_cause, 512, "A stream with the provided ID already exists");
 					goto prepare_response;
 				}
 			}
+			g_hash_table_insert(mountpoints_temp, &mpid, GUINT_TO_POINTER(TRUE));
+			janus_mutex_unlock(&mountpoints_mutex);
 			mp = janus_streaming_create_file_source(
-					id ? json_integer_value(id) : 0,
+					mpid,
 					name ? (char *)json_string_value(name) : NULL,
 					desc ? (char *)json_string_value(desc) : NULL,
 					filename,
 					FALSE, doaudio, dovideo);
+			janus_mutex_lock(&mountpoints_mutex);
+			g_hash_table_remove(mountpoints_temp, &mpid);
+			janus_mutex_unlock(&mountpoints_mutex);
 			if(mp == NULL) {
 				JANUS_LOG(LOG_ERR, "Error creating 'ondemand' stream...\n");
 				error_code = JANUS_STREAMING_ERROR_CANT_CREATE;
@@ -2664,8 +2713,34 @@ static json_t *janus_streaming_process_synchronous_request(janus_streaming_sessi
 					janus_network_address_nullify(&multicast_iface);
 				}
 			}
+			/* Check if an ID has been provided, or if we need to generate one ourselves */
+			janus_mutex_lock(&mountpoints_mutex);
+			guint64 mpid = 0;
+			if(id == NULL) {
+				JANUS_LOG(LOG_VERB, "Missing id, will generate a random one...\n");
+				while(mpid == 0) {
+					mpid = janus_random_uint64();
+					if(g_hash_table_lookup(mountpoints, &mpid) != NULL ||
+							g_hash_table_lookup(mountpoints_temp, &mpid) != NULL) {
+						/* ID already in use, try another one */
+						mpid = 0;
+					}
+				}
+			} else {
+				mpid = json_integer_value(id);
+				mp = g_hash_table_lookup(mountpoints, &mpid);
+				if(mp != NULL || g_hash_table_lookup(mountpoints_temp, &mpid)) {
+					janus_mutex_unlock(&mountpoints_mutex);
+					JANUS_LOG(LOG_ERR, "A stream with the provided ID already exists\n");
+					error_code = JANUS_STREAMING_ERROR_CANT_CREATE;
+					g_snprintf(error_cause, 512, "A stream with the provided ID already exists");
+					goto prepare_response;
+				}
+			}
+			g_hash_table_insert(mountpoints_temp, &mpid, GUINT_TO_POINTER(TRUE));
+			janus_mutex_unlock(&mountpoints_mutex);
 			mp = janus_streaming_create_rtsp_source(
-					id ? json_integer_value(id) : 0,
+					mpid,
 					name ? (char *)json_string_value(name) : NULL,
 					desc ? (char *)json_string_value(desc) : NULL,
 					(char *)json_string_value(url),
@@ -2677,6 +2752,9 @@ static json_t *janus_streaming_process_synchronous_request(janus_streaming_sessi
 						(char *)json_string_value(videortpmap), (char *)json_string_value(videofmtp),
 					&multicast_iface,
 					error_on_failure);
+			janus_mutex_lock(&mountpoints_mutex);
+			g_hash_table_remove(mountpoints_temp, &mpid);
+			janus_mutex_unlock(&mountpoints_mutex);
 			if(mp == NULL) {
 				JANUS_LOG(LOG_ERR, "Error creating 'rtsp' stream...\n");
 				error_code = JANUS_STREAMING_ERROR_CANT_CREATE;
@@ -4514,6 +4592,7 @@ error:
 /* Helpers to create a listener filedescriptor */
 static int janus_streaming_create_fd(int port, in_addr_t mcast, const janus_network_address *iface,
 		const char *listenername, const char *medianame, const char *mountpointname, gboolean quiet) {
+	janus_mutex_lock(&fd_mutex);
 	struct sockaddr_in address;
 	janus_network_address_string_buffer address_representation;
 
@@ -4542,6 +4621,7 @@ static int janus_streaming_create_fd(int port, in_addr_t mcast, const janus_netw
 				if((setsockopt(fd, IPPROTO_IP, IP_MULTICAST_ALL, (void*) &mc_all, sizeof(mc_all))) < 0) {
 					JANUS_LOG(LOG_ERR, "[%s] %s listener setsockopt IP_MULTICAST_ALL failed\n", mountpointname, listenername);
 					close(fd);
+					janus_mutex_unlock(&fd_mutex);
 					return -1;
 				}
 #endif
@@ -4556,6 +4636,7 @@ static int janus_streaming_create_fd(int port, in_addr_t mcast, const janus_netw
 					} else {
 						JANUS_LOG(LOG_ERR, "[%s] %s listener: invalid multicast address type (only IPv4 is currently supported by this plugin)\n", mountpointname, listenername);
 						close(fd);
+						janus_mutex_unlock(&fd_mutex);
 						return -1;
 					}
 				} else {
@@ -4564,6 +4645,7 @@ static int janus_streaming_create_fd(int port, in_addr_t mcast, const janus_netw
 				if(setsockopt(fd, IPPROTO_IP, IP_ADD_MEMBERSHIP, &mreq, sizeof(mreq)) == -1) {
 					JANUS_LOG(LOG_ERR, "[%s] %s listener IP_ADD_MEMBERSHIP failed\n", mountpointname, listenername);
 					close(fd);
+					janus_mutex_unlock(&fd_mutex);
 					return -1;
 				}
 				JANUS_LOG(LOG_INFO, "[%s] %s listener IP_ADD_MEMBERSHIP ok\n", mountpointname, listenername);
@@ -4587,6 +4669,7 @@ static int janus_streaming_create_fd(int port, in_addr_t mcast, const janus_netw
 			if(setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse)) == -1) {
 				JANUS_LOG(LOG_ERR, "[%s] %s listener setsockopt SO_REUSEADDR failed\n", mountpointname, listenername);
 				close(fd);
+				janus_mutex_unlock(&fd_mutex);
 				return -1;
 			}
 			address.sin_addr.s_addr = mcast;
@@ -4608,16 +4691,18 @@ static int janus_streaming_create_fd(int port, in_addr_t mcast, const janus_netw
 		if(bind(fd, (struct sockaddr *)(&address), sizeof(struct sockaddr)) < 0) {
 			close(fd);
 			fd = -1;
-			if(!use_range && !quiet) {
+			if(!quiet) {
 				JANUS_LOG(LOG_ERR, "[%s] Bind failed for %s (port %d)...\n", mountpointname, medianame, port);
-				break;
 			}
+			if(!use_range)	/* Asked for a specific port but it's not available, give up */
+				break;
 		} else {
 			if(use_range)
 				rtp_range_slider = port;	/* Update global slider */
 			break;
 		}
 	}
+	janus_mutex_unlock(&fd_mutex);
 	return fd;
 }
 /* Helper to bind RTP/RTCP port pair (for RTSP) */
@@ -4757,17 +4842,6 @@ janus_streaming_mountpoint *janus_streaming_create_rtp_source(
 		gboolean dovideo, char *vmcast, const janus_network_address *viface, uint16_t vport, uint16_t vrtcpport, uint8_t vcodec, char *vrtpmap, char *vfmtp, gboolean bufferkf,
 			gboolean simulcast, uint16_t vport2, uint16_t vport3, gboolean svc, gboolean dovskew, int rtp_collision,
 		gboolean dodata, const janus_network_address *diface, uint16_t dport, gboolean buffermsg) {
-	janus_mutex_lock(&mountpoints_mutex);
-	if(id == 0) {
-		JANUS_LOG(LOG_VERB, "Missing id, will generate a random one...\n");
-		while(id == 0) {
-			id = janus_random_uint64();
-			if(g_hash_table_lookup(mountpoints, &id) != NULL) {
-				/* ID already in use, try another one */
-				id = 0;
-			}
-		}
-	}
 	char tempname[255];
 	if(name == NULL) {
 		JANUS_LOG(LOG_VERB, "Missing name, will generate a random one...\n");
@@ -4781,16 +4855,22 @@ janus_streaming_mountpoint *janus_streaming_create_rtp_source(
 	}
 	if(!doaudio && !dovideo && !dodata) {
 		JANUS_LOG(LOG_ERR, "Can't add 'rtp' stream, no audio, video or data have to be streamed...\n");
+		janus_mutex_lock(&mountpoints_mutex);
+		g_hash_table_remove(mountpoints_temp, &id);
 		janus_mutex_unlock(&mountpoints_mutex);
 		return NULL;
 	}
 	if(doaudio && (artpmap == NULL)) {
 		JANUS_LOG(LOG_ERR, "Can't add 'rtp' stream, missing mandatory information for audio...\n");
+		janus_mutex_lock(&mountpoints_mutex);
+		g_hash_table_remove(mountpoints_temp, &id);
 		janus_mutex_unlock(&mountpoints_mutex);
 		return NULL;
 	}
 	if(dovideo && (vcodec == 0 || vrtpmap == NULL)) {
 		JANUS_LOG(LOG_ERR, "Can't add 'rtp' stream, missing mandatory information for video...\n");
+		janus_mutex_lock(&mountpoints_mutex);
+		g_hash_table_remove(mountpoints_temp, &id);
 		janus_mutex_unlock(&mountpoints_mutex);
 		return NULL;
 	}
@@ -4806,6 +4886,8 @@ janus_streaming_mountpoint *janus_streaming_create_rtp_source(
 			"Audio", "audio", name ? name : tempname, FALSE);
 		if(audio_fd < 0) {
 			JANUS_LOG(LOG_ERR, "Can't bind to port %d for audio...\n", aport);
+			janus_mutex_lock(&mountpoints_mutex);
+			g_hash_table_remove(mountpoints_temp, &id);
 			janus_mutex_unlock(&mountpoints_mutex);
 			return NULL;
 		}
@@ -4817,6 +4899,8 @@ janus_streaming_mountpoint *janus_streaming_create_rtp_source(
 				JANUS_LOG(LOG_ERR, "Can't bind to port %d for audio rtcp...\n", aport+1);
 				if(audio_fd > -1)
 					close(audio_fd);
+				janus_mutex_lock(&mountpoints_mutex);
+				g_hash_table_remove(mountpoints_temp, &id);
 				janus_mutex_unlock(&mountpoints_mutex);
 				return NULL;
 			}
@@ -4833,6 +4917,8 @@ janus_streaming_mountpoint *janus_streaming_create_rtp_source(
 				close(audio_fd);
 			if(audio_rtcp_fd > -1)
 				close(audio_rtcp_fd);
+			janus_mutex_lock(&mountpoints_mutex);
+			g_hash_table_remove(mountpoints_temp, &id);
 			janus_mutex_unlock(&mountpoints_mutex);
 			return NULL;
 		}
@@ -4848,6 +4934,8 @@ janus_streaming_mountpoint *janus_streaming_create_rtp_source(
 					close(audio_rtcp_fd);
 				if(video_fd[0] > -1)
 					close(video_fd[0]);
+				janus_mutex_lock(&mountpoints_mutex);
+				g_hash_table_remove(mountpoints_temp, &id);
 				janus_mutex_unlock(&mountpoints_mutex);
 				return NULL;
 			}
@@ -4866,6 +4954,8 @@ janus_streaming_mountpoint *janus_streaming_create_rtp_source(
 						close(video_fd[0]);
 					if(video_rtcp_fd > -1)
 						close(video_rtcp_fd);
+					janus_mutex_lock(&mountpoints_mutex);
+					g_hash_table_remove(mountpoints_temp, &id);
 					janus_mutex_unlock(&mountpoints_mutex);
 					return NULL;
 				}
@@ -4886,6 +4976,8 @@ janus_streaming_mountpoint *janus_streaming_create_rtp_source(
 						close(video_fd[0]);
 					if(video_fd[1] > -1)
 						close(video_fd[1]);
+					janus_mutex_lock(&mountpoints_mutex);
+					g_hash_table_remove(mountpoints_temp, &id);
 					janus_mutex_unlock(&mountpoints_mutex);
 					return NULL;
 				}
@@ -4912,6 +5004,8 @@ janus_streaming_mountpoint *janus_streaming_create_rtp_source(
 				close(video_fd[1]);
 			if(video_fd[2] > -1)
 				close(video_fd[2]);
+			janus_mutex_lock(&mountpoints_mutex);
+			g_hash_table_remove(mountpoints_temp, &id);
 			janus_mutex_unlock(&mountpoints_mutex);
 			return NULL;
 		}
@@ -4964,6 +5058,8 @@ janus_streaming_mountpoint *janus_streaming_create_rtp_source(
 				close(video_fd[2]);
 			if(data_fd > -1)
 				close(data_fd);
+			janus_mutex_lock(&mountpoints_mutex);
+			g_hash_table_remove(mountpoints_temp, &id);
 			janus_mutex_unlock(&mountpoints_mutex);
 			g_free(live_rtp_source);
 			g_free(live_rtp->name);
@@ -5002,6 +5098,8 @@ janus_streaming_mountpoint *janus_streaming_create_rtp_source(
 				close(video_fd[2]);
 			if(data_fd > -1)
 				close(data_fd);
+			janus_mutex_lock(&mountpoints_mutex);
+			g_hash_table_remove(mountpoints_temp, &id);
 			janus_mutex_unlock(&mountpoints_mutex);
 			g_free(live_rtp_source);
 			g_free(live_rtp->name);
@@ -5082,7 +5180,9 @@ janus_streaming_mountpoint *janus_streaming_create_rtp_source(
 	g_atomic_int_set(&live_rtp->destroyed, 0);
 	janus_refcount_init(&live_rtp->ref, janus_streaming_mountpoint_free);
 	janus_mutex_init(&live_rtp->mutex);
+	janus_mutex_lock(&mountpoints_mutex);
 	g_hash_table_insert(mountpoints, janus_uint64_dup(live_rtp->id), live_rtp);
+	g_hash_table_remove(mountpoints_temp, &id);
 	janus_mutex_unlock(&mountpoints_mutex);
 	/* If we need helper threads, spawn them now */
 	GError *error = NULL;
@@ -5128,39 +5228,33 @@ janus_streaming_mountpoint *janus_streaming_create_rtp_source(
 janus_streaming_mountpoint *janus_streaming_create_file_source(
 		uint64_t id, char *name, char *desc, char *filename,
 		gboolean live, gboolean doaudio, gboolean dovideo) {
-	janus_mutex_lock(&mountpoints_mutex);
 	if(filename == NULL) {
 		JANUS_LOG(LOG_ERR, "Can't add 'live' stream, missing filename...\n");
-		janus_mutex_unlock(&mountpoints_mutex);
 		return NULL;
 	}
 	if(name == NULL) {
 		JANUS_LOG(LOG_VERB, "Missing name, will generate a random one...\n");
 	}
-	if(id == 0) {
-		JANUS_LOG(LOG_VERB, "Missing id, will generate a random one...\n");
-		while(id == 0) {
-			id = janus_random_uint64();
-			if(g_hash_table_lookup(mountpoints, &id) != NULL) {
-				/* ID already in use, try another one */
-				id = 0;
-			}
-		}
-	}
 	if(!doaudio && !dovideo) {
 		JANUS_LOG(LOG_ERR, "Can't add 'file' stream, no audio or video have to be streamed...\n");
+		janus_mutex_lock(&mountpoints_mutex);
+		g_hash_table_remove(mountpoints_temp, &id);
 		janus_mutex_unlock(&mountpoints_mutex);
 		return NULL;
 	}
 	/* FIXME We don't support video streaming from file yet */
 	if(!doaudio || dovideo) {
 		JANUS_LOG(LOG_ERR, "Can't add 'file' stream, we only support audio file streaming right now...\n");
+		janus_mutex_lock(&mountpoints_mutex);
+		g_hash_table_remove(mountpoints_temp, &id);
 		janus_mutex_unlock(&mountpoints_mutex);
 		return NULL;
 	}
 	/* TODO We should support something more than raw a-Law and mu-Law streams... */
 	if(!strstr(filename, ".alaw") && !strstr(filename, ".mulaw")) {
 		JANUS_LOG(LOG_ERR, "Can't add 'file' stream, unsupported format (we only support raw mu-Law and a-Law files right now)\n");
+		janus_mutex_lock(&mountpoints_mutex);
+		g_hash_table_remove(mountpoints_temp, &id);
 		janus_mutex_unlock(&mountpoints_mutex);
 		return NULL;
 	}
@@ -5201,7 +5295,9 @@ janus_streaming_mountpoint *janus_streaming_create_file_source(
 	g_atomic_int_set(&file_source->destroyed, 0);
 	janus_refcount_init(&file_source->ref, janus_streaming_mountpoint_free);
 	janus_mutex_init(&file_source->mutex);
+	janus_mutex_lock(&mountpoints_mutex);
 	g_hash_table_insert(mountpoints, janus_uint64_dup(file_source->id), file_source);
+	g_hash_table_remove(mountpoints_temp, &id);
 	janus_mutex_unlock(&mountpoints_mutex);
 	if(live) {
 		GError *error = NULL;
@@ -5312,6 +5408,7 @@ static int janus_streaming_rtsp_connect_to_server(janus_streaming_mountpoint *mp
 	curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 1L);
 	curl_easy_setopt(curl, CURLOPT_URL, source->rtsp_url);
 	curl_easy_setopt(curl, CURLOPT_TIMEOUT, 10L);
+	curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 5L);
 	curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 0L);
 	/* Any authentication to take into account? */
 	if(source->rtsp_username && source->rtsp_password) {
@@ -5378,6 +5475,7 @@ static int janus_streaming_rtsp_connect_to_server(janus_streaming_mountpoint *mp
 	int asport = 0, asport_rtcp = 0;
 	multiple_fds audio_fds = {-1, -1};
 
+	janus_mutex_lock(&mountpoints_mutex);
 	/* Parse both video and audio first before proceed to setup as curldata will be reused */
 	int vresult;
 	vresult = janus_streaming_rtsp_parse_sdp(curldata->buffer, name, "video", &vpt,
@@ -5386,6 +5484,12 @@ static int janus_streaming_rtsp_connect_to_server(janus_streaming_mountpoint *mp
 	int aresult;
 	aresult = janus_streaming_rtsp_parse_sdp(curldata->buffer, name, "audio", &apt,
 		atransport, ahost, artpmap, afmtp, acontrol, &source->audio_iface, &audio_fds);
+	janus_mutex_unlock(&mountpoints_mutex);
+
+	if(vresult == -1 && aresult == -1) {
+		/* Both audio and video failed? Give up... */
+		return -7;
+	}
 
 	if(vresult != -1) {
 		/* Send an RTSP SETUP for video */
@@ -5660,18 +5764,7 @@ janus_streaming_mountpoint *janus_streaming_create_rtsp_source(
 	}
 	JANUS_LOG(LOG_VERB, "Audio %s, Video %s\n", doaudio ? "enabled" : "NOT enabled", dovideo ? "enabled" : "NOT enabled");
 
-	janus_mutex_lock(&mountpoints_mutex);
 	/* Create an RTP source for the media we'll get */
-	if(id == 0) {
-		JANUS_LOG(LOG_VERB, "Missing id, will generate a random one...\n");
-		while(id == 0) {
-			id = janus_random_uint64();
-			if(g_hash_table_lookup(mountpoints, &id) != NULL) {
-				/* ID already in use, try another one */
-				id = 0;
-			}
-		}
-	}
 	char tempname[255];
 	if(name == NULL) {
 		JANUS_LOG(LOG_VERB, "Missing name, will generate a random one...\n");
@@ -5744,6 +5837,8 @@ janus_streaming_mountpoint *janus_streaming_create_rtsp_source(
 		/* Now connect to the RTSP server */
 		if(janus_streaming_rtsp_connect_to_server(live_rtsp) < 0) {
 			/* Error connecting, get rid of the mountpoint */
+			janus_mutex_lock(&mountpoints_mutex);
+			g_hash_table_remove(mountpoints_temp, &id);
 			janus_mutex_unlock(&mountpoints_mutex);
 			janus_refcount_decrease(&live_rtsp->ref);
 			return NULL;
@@ -5751,6 +5846,8 @@ janus_streaming_mountpoint *janus_streaming_create_rtsp_source(
 		/* Send an RTSP PLAY, now */
 		if(janus_streaming_rtsp_play(live_rtsp_source) < 0) {
 			/* Error trying to play, get rid of the mountpoint */
+			janus_mutex_lock(&mountpoints_mutex);
+			g_hash_table_remove(mountpoints_temp, &id);
 			janus_mutex_unlock(&mountpoints_mutex);
 			janus_refcount_decrease(&live_rtsp->ref);
 			return NULL;
@@ -5764,12 +5861,16 @@ janus_streaming_mountpoint *janus_streaming_create_rtsp_source(
 	live_rtsp->thread = g_thread_try_new(tname, &janus_streaming_relay_thread, live_rtsp, &error);
 	if(error != NULL) {
 		JANUS_LOG(LOG_ERR, "Got error %d (%s) trying to launch the RTSP thread...\n", error->code, error->message ? error->message : "??");
+		janus_mutex_lock(&mountpoints_mutex);
+		g_hash_table_remove(mountpoints_temp, &id);
 		janus_mutex_unlock(&mountpoints_mutex);
 		janus_refcount_decrease(&live_rtsp->ref);	/* This is for the failed thread */
 		janus_refcount_decrease(&live_rtsp->ref);
 		return NULL;
 	}
+	janus_mutex_lock(&mountpoints_mutex);
 	g_hash_table_insert(mountpoints, janus_uint64_dup(live_rtsp->id), live_rtsp);
+	g_hash_table_remove(mountpoints_temp, &id);
 	janus_mutex_unlock(&mountpoints_mutex);
 	return live_rtsp;
 }
@@ -6145,13 +6246,10 @@ static void *janus_streaming_relay_thread(void *data) {
 				}
 				source->video_rtcp_fd = -1;
 				/* Now let's try to reconnect */
-				janus_mutex_lock(&mountpoints_mutex);
 				if(janus_streaming_rtsp_connect_to_server(mountpoint) < 0) {
 					/* Reconnection failed? Let's try again later */
 					JANUS_LOG(LOG_WARN, "[%s] Reconnection of the RTSP stream failed, trying again in a few seconds...\n", name);
-					janus_mutex_unlock(&mountpoints_mutex);
 				} else {
-					janus_mutex_unlock(&mountpoints_mutex);
 					/* We're connected, let's send a PLAY */
 					if(janus_streaming_rtsp_play(source) < 0) {
 						/* Error trying to play? Let's try again later */
@@ -6346,6 +6444,11 @@ static void *janus_streaming_relay_thread(void *data) {
 					}
 					source->last_received_audio = now;
 					//~ JANUS_LOG(LOG_VERB, "************************\nGot %d bytes on the audio channel...\n", bytes);
+					/* Do we have a new stream? */
+					if(ssrc != a_last_ssrc) {
+						source->audio_ssrc = a_last_ssrc = ssrc;
+						JANUS_LOG(LOG_INFO, "[%s] New audio stream! (ssrc=%"SCNu32")\n", name, a_last_ssrc);
+					}
 					/* If paused, ignore this packet */
 					if(!mountpoint->enabled && !source->arc)
 						continue;
@@ -6371,11 +6474,6 @@ static void *janus_streaming_relay_thread(void *data) {
 					packet.is_rtp = TRUE;
 					packet.is_video = FALSE;
 					packet.is_keyframe = FALSE;
-					/* Do we have a new stream? */
-					if(ssrc != a_last_ssrc) {
-						source->audio_ssrc = a_last_ssrc = ssrc;
-						JANUS_LOG(LOG_INFO, "[%s] New audio stream! (ssrc=%"SCNu32")\n", name, a_last_ssrc);
-					}
 					packet.data->type = mountpoint->codecs.audio_pt;
 					/* Is there a recorder? */
 					janus_rtp_header_update(packet.data, &source->context[0], FALSE, 0);
@@ -6441,6 +6539,14 @@ static void *janus_streaming_relay_thread(void *data) {
 					}
 					source->last_received_video = now;
 					//~ JANUS_LOG(LOG_VERB, "************************\nGot %d bytes on the video channel...\n", bytes);
+					/* Do we have a new stream? */
+					if(ssrc != v_last_ssrc[index]) {
+						v_last_ssrc[index] = ssrc;
+						if(index == 0)
+							source->video_ssrc = ssrc;
+						JANUS_LOG(LOG_INFO, "[%s] New video stream! (ssrc=%"SCNu32", index %d)\n",
+							name, v_last_ssrc[index], index);
+					}
 					/* Is this SRTP? */
 					if(source->is_srtp) {
 						int buflen = bytes;
@@ -6566,14 +6672,6 @@ static void *janus_streaming_relay_thread(void *data) {
 								}
 							}
 						}
-					}
-					/* Do we have a new stream? */
-					if(ssrc != v_last_ssrc[index]) {
-						v_last_ssrc[index] = ssrc;
-						if(index == 0)
-							source->video_ssrc = ssrc;
-						JANUS_LOG(LOG_INFO, "[%s] New video stream! (ssrc=%"SCNu32", index %d)\n",
-							name, v_last_ssrc[index], index);
 					}
 					packet.data->type = mountpoint->codecs.video_pt;
 					/* Is there a recorder? (FIXME notice we only record the first substream, if simulcasting) */
