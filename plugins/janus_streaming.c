@@ -1604,7 +1604,7 @@ int janus_streaming_init(janus_callbacks *callback, const char *config_path) {
 						(vcodec && vcodec->value) ? atoi(vcodec->value) : 0,
 						vrtpmap ? (char *)vrtpmap->value : NULL,
 						vfmtp ? (char *)vfmtp->value : NULL,
-						TRUE,//bufferkf,
+						bufferkf,
 						simulcast,
 						(vport2 && vport2->value) ? atoi(vport2->value) : 0,
 						(vport3 && vport3->value) ? atoi(vport3->value) : 0,
