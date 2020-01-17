@@ -6822,23 +6822,19 @@ static void *janus_streaming_relay_thread(void *data) {
 					janus_mutex_unlock(&traffic_log_writer_mutex);
 				}
 
-				struct tm* t = gmtime(NULL);
-				char time_buff[200];
-				strftime(time_buff, sizeof(time_buff), "%Y%m%d", t);
-				
-				char log_buff[1024];
-				g_snprintf(log_buff, 1024, "%s/traffic_%s.log", logs_path, time_buff);
-
-				FILE* f = fopen(log_buff, "at");
+				FILE* f = fopen("/var/log/janus/traffic.log", "at");
 
 				if(f == NULL) {
-					JANUS_LOG(LOG_ERR, "Create log file \"%s\" error: %s", log_buff, strerror(errno));
+					JANUS_LOG(LOG_ERR, "Create log file error: %s", strerror(errno));
 					continue;
 				}
-
+				
+				struct tm* t = gmtime(NULL);
+				char time_buff[200];
 				strftime(time_buff, sizeof(time_buff), "[%a %b %e %T %Y]", t);
-								
-				g_snprintf(log_buff, 1024, "%s %s %"SCNu64"\n", time_buff, name, out_traffic_bytes);
+				
+				char log_buff[1024];
+				g_snprintf(log_buff, sizeof(log_buff), "%s %s %"SCNu64"\n", time_buff, name, out_traffic_bytes);
 
 				fputs(log_buff, f);
 				fclose(f);
