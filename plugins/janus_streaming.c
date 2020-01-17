@@ -6836,9 +6836,9 @@ static void *janus_streaming_relay_thread(void *data) {
 					continue;
 				}
 
-				strftime(time_buff, sizeof(time_buff), "[% a % b % e % T % Y]", t);
+				strftime(time_buff, sizeof(time_buff), "[%a %b %e %T %Y]", t);
 								
-				g_snprintf(log_buff, 1024, "%s %s %"SCNu64"\n", time_postfix, name, out_traffic_bytes);
+				g_snprintf(log_buff, 1024, "%s %s %"SCNu64"\n", time_buff, name, out_traffic_bytes);
 
 				fputs(log_buff, f);
 				fclose(f);
