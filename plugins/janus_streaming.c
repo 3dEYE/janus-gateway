@@ -6602,7 +6602,7 @@ static void *janus_streaming_relay_thread(void *data) {
 			out_traffic_bytes = mountpoint->out_traffic_bytes;
 			mountpoint->out_traffic_bytes = 0;
 			janus_mutex_unlock(&mountpoint->traffic_mutex);
-
+			JANUS_LOG(LOG_ERR, "Traffic %"SCNu64"\n", out_traffic_bytes);
 			if (out_traffic_bytes != 0)	{
 				const char* logs_path = "/var/log/janus";
 
@@ -6625,7 +6625,7 @@ static void *janus_streaming_relay_thread(void *data) {
 					janus_mutex_unlock(&traffic_log_writer_mutex);
 				}
 
-				FILE* f = fopen("/var/log/janus/traffic.log", "at");
+				FILE* f = fopen("/var/log/janus/traffic.log", "a");
 
 				if (f == NULL) {
 					JANUS_LOG(LOG_ERR, "Create log file error: %s", strerror(errno));
@@ -6639,6 +6639,8 @@ static void *janus_streaming_relay_thread(void *data) {
 				char log_buff[1024];
 				g_snprintf(log_buff, sizeof(log_buff), "%s %s %"SCNu64"\n", time_buff, name, out_traffic_bytes);
 
+				JANUS_LOG(LOG_ERR, "Traffic %s\n", log_buff);
+				
 				fputs(log_buff, f);
 				fclose(f);
 			}
