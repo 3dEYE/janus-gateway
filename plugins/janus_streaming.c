@@ -6593,7 +6593,7 @@ static void *janus_streaming_relay_thread(void *data) {
 	while(!g_atomic_int_get(&stopping) && !g_atomic_int_get(&mountpoint->destroyed)) {
 		gint64 now2 = janus_get_monotonic_time();
 
-		if (now2 - last_time_traffic_log_written >= 60LL * G_USEC_PER_SEC)
+		if (now2 - last_time_traffic_log_written >= 3600LL * G_USEC_PER_SEC)
 		{
 			last_time_traffic_log_written = now2;
 
