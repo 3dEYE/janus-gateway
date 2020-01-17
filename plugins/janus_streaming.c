@@ -680,6 +680,10 @@ rtspiface = network interface IP address or device name to listen on when receiv
 #include <sys/poll.h>
 #include <sys/socket.h>
 #include <sys/time.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#include <time.h>
 
 #include <jansson.h>
 
@@ -924,6 +928,8 @@ static janus_config *config = NULL;
 static const char *config_folder = NULL;
 static janus_mutex config_mutex = JANUS_MUTEX_INITIALIZER;
 
+static janus_mutex traffic_log_writer_mutex = JANUS_MUTEX_INITIALIZER;
+
 /* Useful stuff */
 static volatile gint initialized = 0, stopping = 0;
 static gboolean notify_events = TRUE;
@@ -1082,7 +1088,7 @@ typedef struct janus_streaming_codecs {
 	char *video_rtpmap;
 	char *video_fmtp;
 } janus_streaming_codecs;
-
+#define TRANSPORT_OVERHEAD 52
 typedef struct janus_streaming_mountpoint {
 	guint64 id;
 	char *name;
@@ -1105,6 +1111,8 @@ typedef struct janus_streaming_mountpoint {
 	volatile gint destroyed;
 	janus_mutex mutex;
 	janus_refcount ref;
+	janus_mutex traffic_mutex;
+	guint64 out_traffic_bytes;
 } janus_streaming_mountpoint;
 GHashTable *mountpoints = NULL, *mountpoints_temp = NULL;
 janus_mutex mountpoints_mutex;
@@ -1235,6 +1243,8 @@ static void janus_streaming_mountpoint_free(const janus_refcount *mp_ref) {
 	g_free(mp->codecs.audio_fmtp);
 	g_free(mp->codecs.video_rtpmap);
 	g_free(mp->codecs.video_fmtp);
+	
+	janus_mutex_destroy(mp->traffic_mutex);
 
 	g_free(mp);
 }
@@ -5173,6 +5183,8 @@ janus_streaming_mountpoint *janus_streaming_create_rtp_source(
 	live_rtp->data = dodata;
 	live_rtp->streaming_type = janus_streaming_type_live;
 	live_rtp->streaming_source = janus_streaming_source_rtp;
+	janus_mutex_init(&live_rtp->traffic_mutex);
+	live_rtp->out_traffic_bytes = 0;
 	janus_streaming_rtp_source *live_rtp_source = g_malloc0(sizeof(janus_streaming_rtp_source));
 	/* First of all, let's check if we need to setup an SRTP mountpoint */
 	if(srtpsuite > 0 && srtpcrypto != NULL) {
@@ -6566,6 +6578,7 @@ static void *janus_streaming_relay_thread(void *data) {
 	struct pollfd fds[7];
 	char buffer[1500];
 	memset(buffer, 0, 1500);
+	gint64 last_time_traffic_log_written = janus_get_monotonic_time();
 #ifdef HAVE_LIBCURL
 	/* In case this is an RTSP restreamer, we may have to send keep-alives from time to time */
 	gint64 now = janus_get_monotonic_time(), before = now, ka_timeout = 0;
@@ -6773,6 +6786,61 @@ static void *janus_streaming_relay_thread(void *data) {
 			janus_mutex_unlock(&source->rec_mutex);
 			break;
 		} else if(resfd == 0) {
+			gint64 now = janus_get_monotonic_time();
+
+			if (now - last_time_traffic_log_written >= 3600LL * G_USEC_PER_SEC)
+			{
+				last_time_traffic_log_written = now;
+
+				guint64	out_traffic_bytes;
+				janus_mutex_lock(&session->mountpoint->traffic_mutex);
+				out_traffic_bytes = session->mountpoint->out_traffic_bytes;
+				janus_mutex_unlock(&session->mountpoint->traffic_mutex);
+
+				if (out_traffic_bytes == 0)
+					continue;
+
+				char* logs_path = "/var/log/janus";
+
+				/* Create the folder, if needed */
+				struct stat st = { 0 };
+
+				if (stat(logs_path, &st) == -1) {
+					janus_mutex_lock(&traffic_log_writer_mutex);
+
+					if (stat(logs_path, &st) == -1) {
+						res = janus_mkdir(logs_path, 0755);
+						JANUS_LOG(LOG_VERB, "Creating logs folder: %d\n", res);
+						if (res != 0) {
+							JANUS_LOG(LOG_ERR, "%s", strerror(errno));
+							janus_mutex_unlock(&traffic_log_writer_mutex);
+							continue;
+						}
+					}
+
+					janus_mutex_unlock(&traffic_log_writer_mutex);
+				}
+
+				time_t t = time(NULL);
+				char time_postfix[200];
+				strftime(time_postfix, sizeof(time_postfix), "%Y%m%d", t);
+				
+				char log_buff[1024];
+				g_snprintf(log_buff, 1024, "%s/traffic_%s.log", logs_path, time_postfix);
+
+				FILE* f = fopen(log_buff, "at");
+
+				if(f == NULL) {
+					JANUS_LOG(LOG_ERR, "Create log file \"%s\" error: %s", log_buff, strerror(errno));
+					continue;
+				}
+
+				g_snprintf(log_buff, 1024, "%s %"SCNu64"\n", name, out_traffic_bytes);
+
+				fputs(log_buff, f);
+				fclose(f);
+			}
+			
 			/* No data, keep going */
 			continue;
 		}
@@ -7396,6 +7464,11 @@ static void janus_streaming_relay_rtp_packet(gpointer data, gpointer user_data) 
 				if(override_mark_bit && !has_marker_bit) {
 					packet->data->markerbit = 1;
 				}
+
+				janus_mutex_lock(&session->mountpoint->traffic_mutex);
+				session->mountpoint->out_traffic_bytes += TRANSPORT_OVERHEAD + packet->length;
+				janus_mutex_unlock(&session->mountpoint->traffic_mutex);
+				
 				if(gateway != NULL)
 					gateway->relay_rtp(session->handle, packet->is_video, (char *)packet->data, packet->length);
 				if(override_mark_bit && !has_marker_bit) {
@@ -7455,6 +7528,11 @@ static void janus_streaming_relay_rtp_packet(gpointer data, gpointer user_data) 
 					janus_vp8_simulcast_descriptor_update(payload, plen, &session->vp8_context,
 						session->sim_context.changed_substream);
 				}
+
+				janus_mutex_lock(&session->mountpoint->traffic_mutex);
+				session->mountpoint->out_traffic_bytes += TRANSPORT_OVERHEAD + packet->length;
+				janus_mutex_unlock(&session->mountpoint->traffic_mutex);
+				
 				/* Send the packet */
 				if(gateway != NULL)
 					gateway->relay_rtp(session->handle, packet->is_video, (char *)packet->data, packet->length);
@@ -7468,6 +7546,11 @@ static void janus_streaming_relay_rtp_packet(gpointer data, gpointer user_data) 
 			} else {
 				/* Fix sequence number and timestamp (switching may be involved) */
 				janus_rtp_header_update(packet->data, &session->context, TRUE, 0);
+
+				janus_mutex_lock(&session->mountpoint->traffic_mutex);
+				session->mountpoint->out_traffic_bytes += TRANSPORT_OVERHEAD + packet->length;
+				janus_mutex_unlock(&session->mountpoint->traffic_mutex);
+				
 				if(gateway != NULL)
 					gateway->relay_rtp(session->handle, packet->is_video, (char *)packet->data, packet->length);
 				/* Restore the timestamp and sequence number to what the video source set them to */
@@ -7479,6 +7562,11 @@ static void janus_streaming_relay_rtp_packet(gpointer data, gpointer user_data) 
 				return;
 			/* Fix sequence number and timestamp (switching may be involved) */
 			janus_rtp_header_update(packet->data, &session->context, FALSE, 0);
+			
+			janus_mutex_lock(&session->mountpoint->traffic_mutex);
+			session->mountpoint->out_traffic_bytes += TRANSPORT_OVERHEAD + packet->length;
+			janus_mutex_unlock(&session->mountpoint->traffic_mutex);
+			
 			if(gateway != NULL)
 				gateway->relay_rtp(session->handle, packet->is_video, (char *)packet->data, packet->length);
 			/* Restore the timestamp and sequence number to what the video source set them to */
@@ -7489,6 +7577,11 @@ static void janus_streaming_relay_rtp_packet(gpointer data, gpointer user_data) 
 		/* We're broadcasting a data channel message */
 		if(!session->data)
 			return;
+
+		janus_mutex_lock(&session->mountpoint->traffic_mutex);
+		session->mountpoint->out_traffic_bytes += TRANSPORT_OVERHEAD + packet->length;
+		janus_mutex_unlock(&session->mountpoint->traffic_mutex);
+		
 		if(gateway != NULL)
 			gateway->relay_data(session->handle, NULL, packet->textdata, (char *)packet->data, packet->length);
 	}
@@ -7513,6 +7606,10 @@ static void janus_streaming_relay_rtcp_packet(gpointer data, gpointer user_data)
 		return;
 	}
 
+	janus_mutex_lock(&session->mountpoint->traffic_mutex);
+	session->mountpoint->out_traffic_bytes += TRANSPORT_OVERHEAD + packet->length;
+	janus_mutex_unlock(&session->mountpoint->traffic_mutex);
+		
 	if(gateway != NULL)
 		gateway->relay_rtcp(session->handle, (packet->is_video ? 1 : 0), (char*)packet->data, packet->length);
 
