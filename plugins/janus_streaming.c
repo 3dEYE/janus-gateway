@@ -1244,7 +1244,7 @@ static void janus_streaming_mountpoint_free(const janus_refcount *mp_ref) {
 	g_free(mp->codecs.video_rtpmap);
 	g_free(mp->codecs.video_fmtp);
 	
-	janus_mutex_destroy(mp->traffic_mutex);
+	janus_mutex_destroy(&mp->traffic_mutex);
 
 	g_free(mp);
 }
@@ -6793,14 +6793,14 @@ static void *janus_streaming_relay_thread(void *data) {
 				last_time_traffic_log_written = now;
 
 				guint64	out_traffic_bytes;
-				janus_mutex_lock(&session->mountpoint->traffic_mutex);
-				out_traffic_bytes = session->mountpoint->out_traffic_bytes;
-				janus_mutex_unlock(&session->mountpoint->traffic_mutex);
+				janus_mutex_lock(&mountpoint->traffic_mutex);
+				out_traffic_bytes = mountpoint->out_traffic_bytes;
+				janus_mutex_unlock(&mountpoint->traffic_mutex);
 
 				if (out_traffic_bytes == 0)
 					continue;
 
-				char* logs_path = "/var/log/janus";
+				const char* logs_path = "/var/log/janus";
 
 				/* Create the folder, if needed */
 				struct stat st = { 0 };
@@ -6809,7 +6809,7 @@ static void *janus_streaming_relay_thread(void *data) {
 					janus_mutex_lock(&traffic_log_writer_mutex);
 
 					if (stat(logs_path, &st) == -1) {
-						res = janus_mkdir(logs_path, 0755);
+						int res = janus_mkdir(logs_path, 0755);
 						JANUS_LOG(LOG_VERB, "Creating logs folder: %d\n", res);
 						if (res != 0) {
 							JANUS_LOG(LOG_ERR, "%s", strerror(errno));
@@ -6823,7 +6823,7 @@ static void *janus_streaming_relay_thread(void *data) {
 
 				time_t t = time(NULL);
 				char time_postfix[200];
-				strftime(time_postfix, sizeof(time_postfix), "%Y%m%d", t);
+				strftime(time_postfix, sizeof(time_postfix), "%Y%m%d", &t);
 				
 				char log_buff[1024];
 				g_snprintf(log_buff, 1024, "%s/traffic_%s.log", logs_path, time_postfix);
