@@ -6795,6 +6795,7 @@ static void *janus_streaming_relay_thread(void *data) {
 				guint64	out_traffic_bytes;
 				janus_mutex_lock(&mountpoint->traffic_mutex);
 				out_traffic_bytes = mountpoint->out_traffic_bytes;
+				mountpoint->out_traffic_bytes = 0;
 				janus_mutex_unlock(&mountpoint->traffic_mutex);
 
 				if (out_traffic_bytes == 0)
@@ -6821,12 +6822,12 @@ static void *janus_streaming_relay_thread(void *data) {
 					janus_mutex_unlock(&traffic_log_writer_mutex);
 				}
 
-				time_t t = time(NULL);
-				char time_postfix[200];
-				strftime(time_postfix, sizeof(time_postfix), "%Y%m%d", &t);
+				struct tm* t = gmtime(NULL);
+				char time_buff[200];
+				strftime(time_buff, sizeof(time_buff), "%Y%m%d", t);
 				
 				char log_buff[1024];
-				g_snprintf(log_buff, 1024, "%s/traffic_%s.log", logs_path, time_postfix);
+				g_snprintf(log_buff, 1024, "%s/traffic_%s.log", logs_path, time_buff);
 
 				FILE* f = fopen(log_buff, "at");
 
@@ -6835,7 +6836,9 @@ static void *janus_streaming_relay_thread(void *data) {
 					continue;
 				}
 
-				g_snprintf(log_buff, 1024, "%s %"SCNu64"\n", name, out_traffic_bytes);
+				strftime(time_buff, sizeof(time_buff), "[% a % b % e % T % Y]", t);
+								
+				g_snprintf(log_buff, 1024, "%s %s %"SCNu64"\n", time_postfix, name, out_traffic_bytes);
 
 				fputs(log_buff, f);
 				fclose(f);
