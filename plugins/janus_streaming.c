@@ -6603,46 +6603,45 @@ static void *janus_streaming_relay_thread(void *data) {
 			mountpoint->out_traffic_bytes = 0;
 			janus_mutex_unlock(&mountpoint->traffic_mutex);
 
-			if (out_traffic_bytes == 0)
-				continue;
+			if (out_traffic_bytes != 0)	{
+				const char* logs_path = "/var/log/janus";
 
-			const char* logs_path = "/var/log/janus";
-
-			/* Create the folder, if needed */
-			struct stat st = { 0 };
-
-			if (stat(logs_path, &st) == -1) {
-				janus_mutex_lock(&traffic_log_writer_mutex);
+				/* Create the folder, if needed */
+				struct stat st = { 0 };
 
 				if (stat(logs_path, &st) == -1) {
-					int res = janus_mkdir(logs_path, 0755);
-					JANUS_LOG(LOG_VERB, "Creating logs folder: %d\n", res);
-					if (res != 0) {
-						JANUS_LOG(LOG_ERR, "%s", strerror(errno));
-						janus_mutex_unlock(&traffic_log_writer_mutex);
-						continue;
+					janus_mutex_lock(&traffic_log_writer_mutex);
+
+					if (stat(logs_path, &st) == -1) {
+						int res = janus_mkdir(logs_path, 0755);
+						JANUS_LOG(LOG_VERB, "Creating logs folder: %d\n", res);
+						if (res != 0) {
+							JANUS_LOG(LOG_ERR, "%s", strerror(errno));
+							janus_mutex_unlock(&traffic_log_writer_mutex);
+							continue;
+						}
 					}
+
+					janus_mutex_unlock(&traffic_log_writer_mutex);
 				}
 
-				janus_mutex_unlock(&traffic_log_writer_mutex);
+				FILE* f = fopen("/var/log/janus/traffic.log", "at");
+
+				if (f == NULL) {
+					JANUS_LOG(LOG_ERR, "Create log file error: %s", strerror(errno));
+					continue;
+				}
+
+				struct tm* t = gmtime(NULL);
+				char time_buff[200];
+				strftime(time_buff, sizeof(time_buff), "[%a %b %e %T %Y]", t);
+
+				char log_buff[1024];
+				g_snprintf(log_buff, sizeof(log_buff), "%s %s %"SCNu64"\n", time_buff, name, out_traffic_bytes);
+
+				fputs(log_buff, f);
+				fclose(f);
 			}
-
-			FILE* f = fopen("/var/log/janus/traffic.log", "at");
-
-			if (f == NULL) {
-				JANUS_LOG(LOG_ERR, "Create log file error: %s", strerror(errno));
-				continue;
-			}
-
-			struct tm* t = gmtime(NULL);
-			char time_buff[200];
-			strftime(time_buff, sizeof(time_buff), "[%a %b %e %T %Y]", t);
-
-			char log_buff[1024];
-			g_snprintf(log_buff, sizeof(log_buff), "%s %s %"SCNu64"\n", time_buff, name, out_traffic_bytes);
-
-			fputs(log_buff, f);
-			fclose(f);
 		}
 #ifdef HAVE_LIBCURL
 		/* Let's check regularly if the RTSP server seems to be gone */
