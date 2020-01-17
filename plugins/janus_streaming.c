@@ -6634,12 +6634,12 @@ static void *janus_streaming_relay_thread(void *data) {
 
 				struct tm* t = gmtime(NULL);
 				char time_buff[200];
-				strftime(time_buff, sizeof(time_buff), "[%a %b %e %T %Y]", t);
-
+				strftime(time_buff, sizeof(time_buff), "%a %b %e %T %Y", t);
+				JANUS_LOG(LOG_ERR, "Traffic2 %s\n", time_buff);
 				char log_buff[1024];
-				g_snprintf(log_buff, sizeof(log_buff), "%s %s %"SCNu64"\n", time_buff, name, out_traffic_bytes);
+				g_snprintf(log_buff, sizeof(log_buff), "[%s] %s %"SCNu64"\n", time_buff, name, out_traffic_bytes);
 
-				JANUS_LOG(LOG_ERR, "Traffic %s\n", log_buff);
+				JANUS_LOG(LOG_ERR, "Traffic3 %s\n", log_buff);
 				
 				fputs(log_buff, f);
 				fclose(f);
