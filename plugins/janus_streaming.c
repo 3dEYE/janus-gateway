@@ -6604,7 +6604,7 @@ static void *janus_streaming_relay_thread(void *data) {
 			janus_mutex_unlock(&mountpoint->traffic_mutex);
 
 			if (out_traffic_bytes != 0)	{
-				const char* logs_path = "/var/log/janus";
+				const char* logs_path = "/log";
 
 				/* Create the folder, if needed */
 				struct stat st = { 0 };
@@ -6625,7 +6625,7 @@ static void *janus_streaming_relay_thread(void *data) {
 					janus_mutex_unlock(&traffic_log_writer_mutex);
 				}
 
-				FILE* f = fopen("/var/log/janus/traffic.log", "a");
+				FILE* f = fopen("/log/janus_traffic.log", "a");
 
 				if (f == NULL) {
 					JANUS_LOG(LOG_ERR, "Create log file error: %s", strerror(errno));
