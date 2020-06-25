@@ -197,6 +197,7 @@ int janus_jsonlog_init(const char *server_name, const char *config_path) {
 		g_atomic_int_set(&initialized, 0);
 		JANUS_LOG(LOG_ERR, "Got error %d (%s) trying to launch the JSON logger thread...\n",
 			error->code, error->message ? error->message : "??");
+		g_error_free(error);
 		return -1;
 	}
 	JANUS_LOG(LOG_INFO, "%s initialized!\n", JANUS_JSONLOG_NAME);
@@ -324,8 +325,6 @@ static void *janus_jsonlog_thread(void *data) {
 	while(g_atomic_int_get(&initialized) && !g_atomic_int_get(&stopping)) {
 		/* Get a log line from the queue */
 		jline = g_async_queue_pop(loglines);
-		if(jline == NULL)
-			continue;
 		if(jline == &exit_line)
 			break;
 
