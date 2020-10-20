@@ -41,7 +41,7 @@ Janus.isExtensionEnabled = function() {
 		}
 		return Janus.extension.isInstalled();
 	} else {
-		// Firefox of others, no need for the extension (but this doesn't mean it will work)
+		// Firefox and others, no need for the extension (but this doesn't mean it will work)
 		return true;
 	}
 };
@@ -389,9 +389,9 @@ Janus.init = function(options) {
 			// Firefox definitely does, starting from version 59
 			Janus.unifiedPlan = true;
 		} else if(Janus.webRTCAdapter.browserDetails.browser === 'chrome' &&
-				Janus.webRTCAdapter.browserDetails.version < 72) {
+				Janus.webRTCAdapter.browserDetails.version >= 72) {
 			// Chrome does, but it's only usable from version 72 on
-			Janus.unifiedPlan = false;
+			Janus.unifiedPlan = true;
 		} else if(!window.RTCRtpTransceiver || !('currentDirection' in RTCRtpTransceiver.prototype)) {
 			// Safari supports addTransceiver() but not Unified Plan when
 			// currentDirection is not defined (see codepen above).
@@ -547,6 +547,7 @@ function Janus(gatewayCallbacks) {
 		createSession(callbacks);
 	};
 	this.getSessionId = function() { return sessionId; };
+	this.getInfo = function(callbacks) { getInfo(callbacks); };
 	this.destroy = function(callbacks) { destroySession(callbacks); };
 	this.attach = function(callbacks) { createHandle(callbacks); };
 
@@ -599,6 +600,18 @@ function Janus(gatewayCallbacks) {
 		if(json["janus"] === "keepalive") {
 			// Nothing happened
 			Janus.vdebug("Got a keepalive on session " + sessionId);
+			return;
+		} else if(json["janus"] === "server_info") {
+			// Just info on the Janus instance
+			Janus.debug("Got info on the Janus instance");
+			Janus.debug(json);
+			var transaction = json["transaction"];
+			if(transaction) {
+				var reportSuccess = transactions[transaction];
+				if(reportSuccess)
+					reportSuccess(json);
+				delete transactions[transaction];
+			}
 			return;
 		} else if(json["janus"] === "ack") {
 			// Just an ack, we can probably ignore
@@ -955,6 +968,59 @@ function Janus(gatewayCallbacks) {
 		});
 	}
 
+	// Private method to get info on the server
+	function getInfo(callbacks) {
+		callbacks = callbacks || {};
+		// FIXME This method triggers a success even when we fail
+		callbacks.success = (typeof callbacks.success == "function") ? callbacks.success : Janus.noop;
+		callbacks.error = (typeof callbacks.error == "function") ? callbacks.error : Janus.noop;
+		Janus.log("Getting info on Janus instance");
+		if(!connected) {
+			Janus.warn("Is the server down? (connected=false)");
+			callbacks.error("Is the server down? (connected=false)");
+			return;
+		}
+		// We just need to send an "info" request
+		var transaction = Janus.randomString(12);
+		var request = { "janus": "info", "transaction": transaction };
+		if(token)
+			request["token"] = token;
+		if(apisecret)
+			request["apisecret"] = apisecret;
+		if(websockets) {
+			transactions[transaction] = function(json) {
+				Janus.log("Server info:");
+				Janus.debug(json);
+				if(json["janus"] !== "server_info") {
+					Janus.error("Ooops: " + json["error"].code + " " + json["error"].reason);	// FIXME
+				}
+				callbacks.success(json);
+			}
+			ws.send(JSON.stringify(request));
+			return;
+		}
+		Janus.httpAPICall(server, {
+			verb: 'POST',
+			withCredentials: withCredentials,
+			body: request,
+			success: function(json) {
+				Janus.log("Server info:");
+				Janus.debug(json);
+				if(json["janus"] !== "server_info") {
+					Janus.error("Ooops: " + json["error"].code + " " + json["error"].reason);	// FIXME
+				}
+				callbacks.success(json);
+			},
+			error: function(textStatus, errorThrown) {
+				Janus.error(textStatus + ":", errorThrown);	// FIXME
+				if(errorThrown === "")
+					callbacks.error(textStatus + ": Is the server down?");
+				else
+					callbacks.error(textStatus + ": " + errorThrown);
+			}
+		});
+	}
+
 	// Private method to destroy a session
 	function destroySession(callbacks) {
 		callbacks = callbacks || {};
@@ -1042,7 +1108,12 @@ function Janus(gatewayCallbacks) {
 			ws.addEventListener('message', onUnbindMessage);
 			ws.addEventListener('error', onUnbindError);
 
-			ws.send(JSON.stringify(request));
+			if (ws.readyState === 1) {
+				ws.send(JSON.stringify(request));
+			} else {
+				onUnbindError();
+			}
+
 			return;
 		}
 		Janus.httpAPICall(server + "/" + sessionId, {
@@ -1313,6 +1384,8 @@ function Janus(gatewayCallbacks) {
 			};
 			if(jsep.e2ee)
 				request.jsep.e2ee = true;
+			if(jsep.rid_order === "hml" || jsep.rid_order === "lmh")
+				request.jsep.rid_order = jsep.rid_order;
 		}
 		Janus.debug("Sending message to plugin (handle=" + handleId + "):");
 		Janus.debug(request);
@@ -1443,6 +1516,10 @@ function Janus(gatewayCallbacks) {
 			return;
 		}
 		var config = pluginHandle.webrtcStuff;
+		if(!config.pc) {
+			Janus.warn("Invalid PeerConnection");
+			return;
+		}
 		var onDataChannelMessage = function(event) {
 			Janus.log('Received message on data channel:', event);
 			var label = event.target.label;
@@ -1890,7 +1967,7 @@ function Janus(gatewayCallbacks) {
 						config.pc.addTransceiver(track, {
 							direction: "sendrecv",
 							streams: [stream],
-							sendEncodings: [
+							sendEncodings: callbacks.sendEncodings || [
 								{ rid: "h", active: true, maxBitrate: maxBitrates.high },
 								{ rid: "m", active: true, maxBitrate: maxBitrates.medium, scaleResolutionDownBy: 2 },
 								{ rid: "l", active: true, maxBitrate: maxBitrates.low, scaleResolutionDownBy: 4 }
@@ -2667,7 +2744,7 @@ function Janus(gatewayCallbacks) {
 					parameters = {};
 				}
 				var maxBitrates = getMaxBitrates(callbacks.simulcastMaxBitrates);
-				parameters.encodings = [
+				parameters.encodings = callbacks.sendEncodings || [
 					{ rid: "h", active: true, maxBitrate: maxBitrates.high },
 					{ rid: "m", active: true, maxBitrate: maxBitrates.medium, scaleResolutionDownBy: 2 },
 					{ rid: "l", active: true, maxBitrate: maxBitrates.low, scaleResolutionDownBy: 4 }
@@ -2909,10 +2986,10 @@ function Janus(gatewayCallbacks) {
 			Janus.log(parameters);
 
 			var maxBitrates = getMaxBitrates(callbacks.simulcastMaxBitrates);
-			sender.setParameters({encodings: [
-				{ rid: "high", active: true, priority: "high", maxBitrate: maxBitrates.high },
-				{ rid: "medium", active: true, priority: "medium", maxBitrate: maxBitrates.medium },
-				{ rid: "low", active: true, priority: "low", maxBitrate: maxBitrates.low }
+			sender.setParameters({encodings: callbacks.sendEncodings || [
+				{ rid: "h", active: true, maxBitrate: maxBitrates.high },
+				{ rid: "m", active: true, maxBitrate: maxBitrates.medium, scaleResolutionDownBy: 2},
+				{ rid: "l", active: true, maxBitrate: maxBitrates.low, scaleResolutionDownBy: 4}
 			]});
 		}
 		config.pc.createAnswer(mediaConstraints)
